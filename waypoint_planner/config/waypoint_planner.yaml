@@ -1,0 +1,25 @@
+waypoint_planner:
+  ros__parameters:
+    waypoint_graph_file: '/home/odexter/ros2_sim_ws/src/aerial_waypoint_manager/waypoint_sampler/waypoint_graph.pkl'
+    
+    # Topics
+    uav_gps_topic: '/mavros/global_position/global'
+    goal_topic: 'waypoint_request'
+    waypoint_response_topic: 'waypoint_response'
+    setpoint_topic: '/mavros/setpoint/global'
+    land_topic: '~/land'
+    state_topic: '~/state'
+    
+    # Takeoff
+    takeoff_enabled: true
+    use_takeoff_pos: true
+    takeoff_latitude: 40.0
+    takeoff_longitude: -74.0
+    takeoff_altitude: 10.0
+    
+    # FSM
+    fsm_rate: 2.0
+    altitude_threshold: 1.0
+    position_threshold: 2.0
+    landing_altitude: 0.5
+    local_waypoint_altitude: 10.0
