@@ -7,20 +7,23 @@ Provides buttons for Takeoff, Land, Abort, and relative position commands.
 import sys
 import threading
 
+import time
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 
 from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt32
+from geographic_msgs.msg import GeoPoseStamped
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Point
+from mavros_msgs.msg import State as MavrosState, StatusText
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QGroupBox, QDoubleSpinBox, QGridLayout
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer
 from PyQt5.QtGui import QFont
 
 
@@ -28,6 +31,11 @@ class SignalBridge(QObject):
     """Bridge for thread-safe Qt signal emission from ROS callbacks."""
     state_changed = pyqtSignal(str)
     gps_changed = pyqtSignal(float, float, float)
+    setpoint_changed = pyqtSignal(float, float, float)  # actual tracked setpoint
+    preview_setpoint_changed = pyqtSignal(float, float, float)  # preview only
+    mavros_state_changed = pyqtSignal(bool, bool, str, int)  # connected, armed, mode, sys_status
+    satellites_changed = pyqtSignal(int)
+    statustext_changed = pyqtSignal(int, str)  # severity, text
 
 
 class WaypointGuiNode(Node):
@@ -52,7 +60,47 @@ class WaypointGuiNode(Node):
             self._on_gps,
             10
         )
+
+        # Subscribe to current setpoint (tracked waypoint)
+        self.setpoint_sub = self.create_subscription(
+            GeoPoseStamped,
+            '/mavros/setpoint/global',
+            self._on_setpoint,
+            10
+        )
+
+        # Subscribe to preview setpoint (published while IDLE as a UI preview only)
+        self.preview_sub = self.create_subscription(
+            GeoPoseStamped,
+            '/waypoint_planner/preview_setpoint',
+            self._on_preview_setpoint,
+            10
+        )
         
+        # Subscribe to MAVROS state
+        self.mavros_state_sub = self.create_subscription(
+            MavrosState,
+            '/mavros/state',
+            self._on_mavros_state,
+            10
+        )
+
+        # Subscribe to satellite count
+        self.sat_sub = self.create_subscription(
+            UInt32,
+            '/mavros/global_position/raw/satellites',
+            self._on_satellites,
+            10
+        )
+
+        # Subscribe to PX4 status text (preflight errors, warnings, etc.)
+        self.statustext_sub = self.create_subscription(
+            StatusText,
+            '/mavros/statustext/recv',
+            self._on_statustext,
+            10
+        )
+
         # Publisher for relative move commands
         self.relative_move_pub = self.create_publisher(
             Point,
@@ -74,6 +122,36 @@ class WaypointGuiNode(Node):
     def _on_gps(self, msg: NavSatFix):
         """Handle GPS updates."""
         self.signal_bridge.gps_changed.emit(msg.latitude, msg.longitude, msg.altitude)
+
+    def _on_setpoint(self, msg: GeoPoseStamped):
+        """Handle current setpoint / tracked waypoint updates (these command the vehicle)."""
+        # Indicate we have an actual setpoint active
+        self._has_actual_setpoint = True
+        lat = msg.pose.position.latitude
+        lon = msg.pose.position.longitude
+        alt = msg.pose.position.altitude
+        self.signal_bridge.setpoint_changed.emit(lat, lon, alt)
+
+    def _on_preview_setpoint(self, msg: GeoPoseStamped):
+        """Handle preview-only setpoint updates (IDLE preview)."""
+        lat = msg.pose.position.latitude
+        lon = msg.pose.position.longitude
+        alt = msg.pose.position.altitude
+        self.signal_bridge.preview_setpoint_changed.emit(lat, lon, alt)
+
+    def _on_mavros_state(self, msg: MavrosState):
+        """Handle MAVROS state updates."""
+        self.signal_bridge.mavros_state_changed.emit(
+            msg.connected, msg.armed, msg.mode, msg.system_status
+        )
+
+    def _on_satellites(self, msg: UInt32):
+        """Handle satellite count updates."""
+        self.signal_bridge.satellites_changed.emit(int(msg.data))
+
+    def _on_statustext(self, msg: StatusText):
+        """Handle PX4 status text messages (preflight errors, etc.)."""
+        self.signal_bridge.statustext_changed.emit(msg.severity, msg.text)
     
     def call_takeoff(self):
         """Call the takeoff service."""
@@ -118,16 +196,31 @@ class WaypointGuiWindow(QMainWindow):
         self.signal_bridge = signal_bridge
         
         self.setWindowTitle('Waypoint Planner Control')
-        self.setMinimumSize(450, 500)
+        self.setMinimumSize(500, 600)
         
         # Connect signals
         self.signal_bridge.state_changed.connect(self._update_state_display)
         self.signal_bridge.gps_changed.connect(self._update_gps_display)
+        self.signal_bridge.setpoint_changed.connect(self._update_target_display)
+        self.signal_bridge.preview_setpoint_changed.connect(self._update_preview_display)
+        self.signal_bridge.mavros_state_changed.connect(self._update_mavros_state)
+        self.signal_bridge.satellites_changed.connect(self._update_satellites)
+        self.signal_bridge.statustext_changed.connect(self._update_statustext)
         
         self._setup_ui()
         
         # Current state
         self.current_state = 'UNKNOWN'
+        # Track whether an actual setpoint (commands vehicle) is active; previews are ignored while true
+        self._has_actual_setpoint = False
+
+        # Track last received state time and start a timer to detect timeouts
+        self.last_state_time = None
+        self._state_timeout_s = 3.0
+        self._state_timer = QTimer(self)
+        self._state_timer.setInterval(1000)  # check every second
+        self._state_timer.timeout.connect(self._check_state_timeout)
+        self._state_timer.start()
     
     def _setup_ui(self):
         """Set up the UI components."""
@@ -172,7 +265,50 @@ class WaypointGuiWindow(QMainWindow):
         gps_layout.addWidget(self.lon_label, 0, 1)
         gps_layout.addWidget(self.alt_label, 0, 2)
         layout.addWidget(gps_group)
-        
+
+        # Target waypoint display
+        target_group = QGroupBox('Target Waypoint')
+        target_layout = QGridLayout(target_group)
+
+        self.target_lat_label = QLabel('Lat: --')
+        self.target_lon_label = QLabel('Lon: --')
+        self.target_alt_label = QLabel('Alt: --')
+
+        for lbl in [self.target_lat_label, self.target_lon_label, self.target_alt_label]:
+            lbl.setFont(QFont('Monospace', 11))
+            lbl.setStyleSheet('color: #66bb6a; padding: 3px;')
+
+        target_layout.addWidget(self.target_lat_label, 0, 0)
+        target_layout.addWidget(self.target_lon_label, 0, 1)
+        target_layout.addWidget(self.target_alt_label, 0, 2)
+        layout.addWidget(target_group)
+
+        # PX4 / MAVROS status display
+        px4_group = QGroupBox('PX4 Status')
+        px4_layout = QGridLayout(px4_group)
+
+        self.connected_label = QLabel('FCU: --')
+        self.armed_label = QLabel('Armed: --')
+        self.mode_label = QLabel('Mode: --')
+        self.sat_label = QLabel('Sats: --')
+
+        for lbl in [self.connected_label, self.armed_label, self.mode_label, self.sat_label]:
+            lbl.setFont(QFont('Monospace', 11))
+            lbl.setStyleSheet('color: #aaaaaa; padding: 3px;')
+
+        px4_layout.addWidget(self.connected_label, 0, 0)
+        px4_layout.addWidget(self.armed_label, 0, 1)
+        px4_layout.addWidget(self.mode_label, 0, 2)
+        px4_layout.addWidget(self.sat_label, 0, 3)
+
+        self.statustext_label = QLabel('PX4: --')
+        self.statustext_label.setFont(QFont('Monospace', 10))
+        self.statustext_label.setWordWrap(True)
+        self.statustext_label.setStyleSheet('color: #aaaaaa; padding: 3px;')
+        px4_layout.addWidget(self.statustext_label, 1, 0, 1, 4)
+
+        layout.addWidget(px4_group)
+
         # Control buttons
         button_group = QGroupBox('Flight Controls')
         button_layout = QHBoxLayout(button_group)
@@ -232,7 +368,7 @@ class WaypointGuiWindow(QMainWindow):
         layout.addWidget(move_group)
         
         # Status bar
-        self.status_label = QLabel('Ready')
+        self.status_label = QLabel('Waiting for connection...')
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet('color: #888888; padding: 8px;')
         layout.addWidget(self.status_label)
@@ -300,6 +436,8 @@ class WaypointGuiWindow(QMainWindow):
     
     def _update_state_display(self, state: str):
         """Update the state display label."""
+        self.last_state_time = time.time()
+        self.status_label.setText('Ready')
         self.current_state = state
         self.state_label.setText(state)
         
@@ -331,7 +469,72 @@ class WaypointGuiWindow(QMainWindow):
         self.lat_label.setText(f'Lat: {lat:.6f}')
         self.lon_label.setText(f'Lon: {lon:.6f}')
         self.alt_label.setText(f'Alt: {alt:.1f}m')
-    
+
+    def _check_state_timeout(self):
+        """Check for state message timeout and update status_label accordingly."""
+        if self.last_state_time is None:
+            if self.status_label.text() != 'Waiting for connection...':
+                self.status_label.setText('Waiting for connection...')
+            return
+        if time.time() - self.last_state_time > self._state_timeout_s:
+            if self.status_label.text() != 'Waiting for connection...':
+                self.status_label.setText('Waiting for connection...')
+        else:
+            if self.status_label.text() == 'Waiting for connection...':
+                self.status_label.setText('Ready')
+
+    def _update_target_display(self, lat: float, lon: float, alt: float):
+        """Update target waypoint display for an actual tracked setpoint (commands vehicle)."""
+        self._has_actual_setpoint = True
+        self.target_lat_label.setText(f'Lat: {lat:.6f}')
+        self.target_lon_label.setText(f'Lon: {lon:.6f}')
+        self.target_alt_label.setText(f'Alt: {alt:.1f}m')
+        # Stronger color for active target
+        for lbl in [self.target_lat_label, self.target_lon_label, self.target_alt_label]:
+            lbl.setStyleSheet('color: #66bb6a; padding: 3px;')
+
+    def _update_preview_display(self, lat: float, lon: float, alt: float):
+        """Update target waypoint display for a preview setpoint only when no actual setpoint is active."""
+        if self._has_actual_setpoint:
+            return
+        self.target_lat_label.setText(f'Lat: {lat:.6f}')
+        self.target_lon_label.setText(f'Lon: {lon:.6f}')
+        self.target_alt_label.setText(f'Alt: {alt:.1f}m')
+        # Softer color for preview
+        for lbl in [self.target_lat_label, self.target_lon_label, self.target_alt_label]:
+            lbl.setStyleSheet('color: #999933; padding: 3px;')
+
+    def _update_mavros_state(self, connected: bool, armed: bool, mode: str, sys_status: int):
+        """Update MAVROS / FCU state display."""
+        conn_txt = 'Connected' if connected else 'Disconnected'
+        conn_color = '#4caf50' if connected else '#f44336'
+        self.connected_label.setText(f'FCU: {conn_txt}')
+        self.connected_label.setStyleSheet(f'color: {conn_color}; padding: 3px;')
+
+        arm_txt = 'ARMED' if armed else 'Disarmed'
+        arm_color = '#ff9800' if armed else '#aaaaaa'
+        self.armed_label.setText(f'Armed: {arm_txt}')
+        self.armed_label.setStyleSheet(f'color: {arm_color}; padding: 3px;')
+
+        self.mode_label.setText(f'Mode: {mode}')
+
+    def _update_satellites(self, count: int):
+        """Update satellite count display."""
+        color = '#4caf50' if count >= 10 else '#ff9800' if count >= 6 else '#f44336'
+        self.sat_label.setText(f'Sats: {count}')
+        self.sat_label.setStyleSheet(f'color: {color}; padding: 3px;')
+
+    def _update_statustext(self, severity: int, text: str):
+        """Update PX4 status text display. Severity: 0-3 error/warning, 4+ info."""
+        if severity <= 3:
+            color = '#f44336'  # red for errors / warnings
+        elif severity <= 5:
+            color = '#ff9800'  # orange for notice / info
+        else:
+            color = '#aaaaaa'  # grey for debug
+        self.statustext_label.setText(f'PX4: {text}')
+        self.statustext_label.setStyleSheet(f'color: {color}; padding: 3px;')
+
     def _on_takeoff(self):
         success, msg = self.ros_node.call_takeoff()
         self.status_label.setText(msg)
@@ -368,9 +571,8 @@ def main(args=None):
     window = WaypointGuiWindow(ros_node, signal_bridge)
     window.show()
     
-    exit_code = app.exec_()
+    exit_code = app.exec_()    
     
-    # Clean shutdown
     executor.shutdown()
     ros_node.destroy_node()
     rclpy.try_shutdown()

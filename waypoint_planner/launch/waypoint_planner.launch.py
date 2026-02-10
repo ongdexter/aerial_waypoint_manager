@@ -10,26 +10,26 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('waypoint_planner')
     default_config = os.path.join(pkg_share, 'waypoint_planner.yaml')
 
-    return LaunchDescription([
-        # Launch arguments
-        DeclareLaunchArgument(
-            'config_file',
-            default_value=default_config,
-            description='Path to the config YAML file'
-        ),
+    config_file_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=default_config,
+        description='Path to the config YAML file'
+    )
 
-        # Waypoint planner node
-        Node(
-            package='waypoint_planner',
-            executable='waypoint_planner_node',
-            name='waypoint_planner',
-            output='screen',
-            parameters=[
-                LaunchConfiguration('config_file'),
-                # Additional parameters can be passed via command line
-            ],
-            remappings=[
-                # Add remappings here if needed
-            ],
-        ),
+    waypoint_planner_node = Node(
+        package='waypoint_planner',
+        executable='waypoint_planner_node',
+        name='waypoint_planner',
+        output='screen',
+        parameters=[
+            LaunchConfiguration('config_file')
+        ],
+        remappings=[
+            # Add remappings here if needed
+        ],
+    )
+
+    return LaunchDescription([
+        config_file_arg,
+        waypoint_planner_node
     ])
