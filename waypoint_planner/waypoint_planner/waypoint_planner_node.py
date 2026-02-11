@@ -26,6 +26,12 @@ class FlightState(Enum):
     LANDING = auto()
 
 
+class WaypointMode(Enum):
+    """Waypoint tracking mode."""
+    AUTO = auto()    # Graph-based path planning
+    MANUAL = auto()  # Direct GPS waypoint
+
+
 class WaypointPlannerNode(Node):
     def __init__(self):
         super().__init__('waypoint_planner')
@@ -93,6 +99,7 @@ class WaypointPlannerNode(Node):
 
         # FSM state
         self.state = FlightState.IDLE
+        self.waypoint_mode = WaypointMode.AUTO
         self.current_gps = None
         self.home_latitude = None
         self.home_longitude = None
@@ -122,11 +129,14 @@ class WaypointPlannerNode(Node):
         # GPS-coordinate path for GUI overlay (lat/lon/alt in pose.position x/y/z)
         self.gps_path_pub = self.create_publisher(Path, '~/planned_path_gps', 10)
         self.state_pub = self.create_publisher(String, state_topic, 10)
+        self.waypoint_mode_pub = self.create_publisher(String, '~/waypoint_mode', 10)
 
         # Subscribers
         self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self._on_gps, 10)
         self.goal_sub = self.create_subscription(NavSatFix, goal_topic, self._on_goal, 10)
+        self.manual_goal_sub = self.create_subscription(NavSatFix, '~/manual_waypoint', self._on_manual_goal, 10)
         self.land_sub = self.create_subscription(Empty, land_topic, self._on_land, 10)
+        self.mode_sub = self.create_subscription(String, '~/set_waypoint_mode', self._on_set_mode, 10)
 
         # Services for FSM control
         self.takeoff_srv = self.create_service(Trigger, '~/takeoff', self._srv_takeoff)
@@ -149,6 +159,10 @@ class WaypointPlannerNode(Node):
         msg = String()
         msg.data = self.state.name
         self.state_pub.publish(msg)
+        # Also publish waypoint mode
+        mode_msg = String()
+        mode_msg.data = self.waypoint_mode.name
+        self.waypoint_mode_pub.publish(mode_msg)
 
     def _set_state(self, new_state: FlightState):
         """Transition to a new state."""
@@ -267,8 +281,50 @@ class WaypointPlannerNode(Node):
             f'lat={new_lat:.6f}, lon={new_lon:.6f}, alt={new_alt:.1f}m'
         )
 
+    def _on_set_mode(self, msg: String):
+        """Handle waypoint mode switch request."""
+        mode_str = msg.data.upper()
+        try:
+            new_mode = WaypointMode[mode_str]
+        except KeyError:
+            self.get_logger().warning(f'Unknown waypoint mode: {mode_str}')
+            return
+
+        if new_mode == self.waypoint_mode:
+            return
+
+        old_mode = self.waypoint_mode
+        self.waypoint_mode = new_mode
+        self.get_logger().info(f'Waypoint mode: {old_mode.name} -> {new_mode.name}')
+
+        # Hold current position and clear any active path
+        if self.state in [FlightState.TRACKING, FlightState.TAKEOFF] and self.current_gps is not None:
+            self.current_path = None
+            self.current_path_idx = 0
+            self._set_gps_setpoint(
+                self.current_gps.latitude,
+                self.current_gps.longitude,
+                self.current_setpoint['altitude'] if self.current_setpoint else self.target_takeoff_altitude
+            )
+            self._publish_gps_path([])  # Clear path overlay
+            self.get_logger().info('Holding current position after mode switch')
+
     def _on_goal(self, msg: NavSatFix):
-        """Handle new goal waypoint request."""
+        """Handle auto goal waypoint request."""
+        if self.waypoint_mode != WaypointMode.AUTO:
+            self.get_logger().warning('Auto goal received but in MANUAL mode, ignoring')
+            return
+        self._process_goal(msg)
+
+    def _on_manual_goal(self, msg: NavSatFix):
+        """Handle manual goal waypoint request."""
+        if self.waypoint_mode != WaypointMode.MANUAL:
+            self.get_logger().warning('Manual goal received but in AUTO mode, ignoring')
+            return
+        self._process_goal(msg)
+
+    def _process_goal(self, msg: NavSatFix):
+        """Plan a graph-based path to the goal GPS coordinate."""
         if self.state not in [FlightState.TRACKING, FlightState.TAKEOFF]:
             self.get_logger().warning(f'Goal received but in {self.state.name} state, ignoring')
             return

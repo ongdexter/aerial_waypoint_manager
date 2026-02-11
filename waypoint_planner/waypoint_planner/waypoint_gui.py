@@ -129,7 +129,14 @@ class WaypointGuiNode(Node):
         # Publisher for manual waypoint goals
         self.goal_pub = self.create_publisher(
             NavSatFix,
-            '/waypoint_planner/waypoint_request',
+            '/waypoint_planner/manual_waypoint',
+            10
+        )
+
+        # Publisher for waypoint mode switches
+        self.mode_pub = self.create_publisher(
+            String,
+            '/waypoint_planner/set_waypoint_mode',
             10
         )
         
@@ -228,6 +235,13 @@ class WaypointGuiNode(Node):
         self.goal_pub.publish(msg)
         self.get_logger().info(f'Manual waypoint goal: lat={lat:.6f}, lon={lon:.6f}')
         return True, f'Goal ({lat:.6f}, {lon:.6f})'
+
+    def send_mode(self, mode: str):
+        """Publish a waypoint mode switch (AUTO or MANUAL)."""
+        msg = String()
+        msg.data = mode
+        self.mode_pub.publish(msg)
+        self.get_logger().info(f'Waypoint mode switch: {mode}')
 
 
 class MapWidget(QLabel):
@@ -918,6 +932,8 @@ class WaypointGuiWindow(QMainWindow):
             self.map_widget.manual_mode = is_manual
             if not is_manual:
                 self.map_widget.clear_manual_waypoint()
+        # Notify the planner node of the mode switch
+        self.ros_node.send_mode('MANUAL' if is_manual else 'AUTO')
         mode_name = 'Manual Waypoint' if is_manual else 'Autonomy'
         self.status_label.setText(f'Mode: {mode_name}')
 
