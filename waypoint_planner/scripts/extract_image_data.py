@@ -7,7 +7,7 @@ import os
 import io
 from playwright.sync_api import sync_playwright
 import time
-from pix_gps_map import PixGpsMap
+from waypoint_planner.pix_gps_map import PixGpsMap
 import pickle
 
 def parse_kml(kml_file: str):
@@ -131,15 +131,20 @@ def get_clean_satellite_with_bounds(ao_coords, nfz_coords_list, image_size=(1200
     return np.array(image), bounds_data
 
 
-def save_map_data(image, bounds_data, pkl_path='satellite_map.pkl'):
+def save_map_data(image, bounds_data, ao_coords, nfz_coords_list, nfz_names, pkl_path='satellite_map.pkl'):
     map_data = {
         'image': image,
         'bounds': bounds_data,
-        'image_shape': image.shape
+        'image_shape': image.shape,
+        'ao_coords': ao_coords,
+        'nfz_coords_list': nfz_coords_list,
+        'nfz_names': nfz_names
     }
     
     with open(pkl_path, 'wb') as f:
         pickle.dump(map_data, f)
+    
+    print(f"Saved map data to {pkl_path}")
     
     return pkl_path
 
@@ -191,7 +196,7 @@ if __name__ == "__main__":
     image, bounds_data = get_clean_satellite_with_bounds(ao_coords, nfz_coords_list)
     
     # save everything in one file
-    pkl_path = save_map_data(image, bounds_data, 'satellite_map.pkl')
+    pkl_path = save_map_data(image, bounds_data, ao_coords, nfz_coords_list, nfz_names, 'satellite_map.pkl')
     
     # load with PixGpsMap and draw polygons    
     map_converter = PixGpsMap('satellite_map.pkl')

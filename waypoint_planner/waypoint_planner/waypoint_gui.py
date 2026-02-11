@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
 Qt GUI for controlling the Waypoint Planner FSM.
-Provides buttons for Takeoff, Land, Abort, and relative position commands.
+Provides buttons for Takeoff, Land, Abort, relative position commands,
+satellite map visualization with GPS overlay, and manual waypoint mode.
 """
 
 import sys
+import os
 import threading
 
 import time
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 
 from sensor_msgs.msg import NavSatFix
+from nav_msgs.msg import Path
 from std_msgs.msg import String, UInt32
 from geographic_msgs.msg import GeoPoseStamped
 from std_srvs.srv import Trigger
@@ -21,10 +25,11 @@ from mavros_msgs.msg import State as MavrosState, StatusText
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFrame, QGroupBox, QDoubleSpinBox, QGridLayout
+    QPushButton, QLabel, QFrame, QGroupBox, QDoubleSpinBox, QGridLayout,
+    QSplitter, QSizePolicy, QButtonGroup, QRadioButton
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QPoint
+from PyQt5.QtGui import QFont, QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPolygon
 
 
 class SignalBridge(QObject):
@@ -36,6 +41,7 @@ class SignalBridge(QObject):
     mavros_state_changed = pyqtSignal(bool, bool, str, int)  # connected, armed, mode, sys_status
     satellites_changed = pyqtSignal(int)
     statustext_changed = pyqtSignal(int, str)  # severity, text
+    path_changed = pyqtSignal(list)  # list of (lat, lon) tuples
 
 
 class WaypointGuiNode(Node):
@@ -45,6 +51,10 @@ class WaypointGuiNode(Node):
         super().__init__('waypoint_gui')
         self.signal_bridge = signal_bridge
         
+        # Parameters
+        self.declare_parameter('satellite_map_file', '')
+        self.satellite_map_file = self.get_parameter('satellite_map_file').get_parameter_value().string_value
+
         # Subscribe to state topic
         self.state_sub = self.create_subscription(
             String,
@@ -74,6 +84,14 @@ class WaypointGuiNode(Node):
             GeoPoseStamped,
             '/waypoint_planner/preview_setpoint',
             self._on_preview_setpoint,
+            10
+        )
+
+        # Subscribe to planned GPS path for map overlay
+        self.gps_path_sub = self.create_subscription(
+            Path,
+            '/waypoint_planner/planned_path_gps',
+            self._on_gps_path,
             10
         )
         
@@ -107,6 +125,13 @@ class WaypointGuiNode(Node):
             '/waypoint_planner/relative_move',
             10
         )
+
+        # Publisher for manual waypoint goals
+        self.goal_pub = self.create_publisher(
+            NavSatFix,
+            '/waypoint_planner/waypoint_request',
+            10
+        )
         
         # Service clients
         self.takeoff_client = self.create_client(Trigger, '/waypoint_planner/takeoff')
@@ -125,7 +150,6 @@ class WaypointGuiNode(Node):
 
     def _on_setpoint(self, msg: GeoPoseStamped):
         """Handle current setpoint / tracked waypoint updates (these command the vehicle)."""
-        # Indicate we have an actual setpoint active
         self._has_actual_setpoint = True
         lat = msg.pose.position.latitude
         lon = msg.pose.position.longitude
@@ -138,6 +162,15 @@ class WaypointGuiNode(Node):
         lon = msg.pose.position.longitude
         alt = msg.pose.position.altitude
         self.signal_bridge.preview_setpoint_changed.emit(lat, lon, alt)
+
+    def _on_gps_path(self, msg: Path):
+        """Handle planned GPS path updates for map overlay."""
+        path_points = []
+        for ps in msg.poses:
+            lat = ps.pose.position.x
+            lon = ps.pose.position.y
+            path_points.append((lat, lon))
+        self.signal_bridge.path_changed.emit(path_points)
 
     def _on_mavros_state(self, msg: MavrosState):
         """Handle MAVROS state updates."""
@@ -186,6 +219,231 @@ class WaypointGuiNode(Node):
         self.relative_move_pub.publish(msg)
         return True, f'Move ({x:.1f}, {y:.1f}, {z:.1f})m'
 
+    def send_goal(self, lat: float, lon: float):
+        """Publish a manual waypoint goal."""
+        msg = NavSatFix()
+        msg.latitude = lat
+        msg.longitude = lon
+        msg.altitude = 0.0  # altitude is managed by the planner
+        self.goal_pub.publish(msg)
+        self.get_logger().info(f'Manual waypoint goal: lat={lat:.6f}, lon={lon:.6f}')
+        return True, f'Goal ({lat:.6f}, {lon:.6f})'
+
+
+class MapWidget(QLabel):
+    """Widget that displays a satellite image with GPS overlay markers."""
+
+    waypoint_clicked = pyqtSignal(float, float)  # lat, lon
+
+    def __init__(self, pix_gps_map, parent=None):
+        super().__init__(parent)
+        self.pix_gps_map = pix_gps_map
+        self.manual_mode = False
+
+        # Overlay data
+        self._gps_pos = None    # (lat, lon)
+        self._setpoint = None   # (lat, lon)
+        self._preview_sp = None # (lat, lon)
+        self._path = []         # [(lat, lon), ...]
+        self._manual_wp = None   # (lat, lon) for last manual click
+        self._has_actual_setpoint = False
+
+        # Build base pixmap from the satellite image
+        img_array = self.pix_gps_map.get_image()
+        if img_array.ndim == 3 and img_array.shape[2] == 4:
+            fmt = QImage.Format_RGBA8888
+        else:
+            fmt = QImage.Format_RGB888
+        h, w = img_array.shape[:2]
+        bytes_per_line = img_array.strides[0]
+        self._base_qimage = QImage(img_array.data, w, h, bytes_per_line, fmt)
+        self._base_pixmap = QPixmap.fromImage(self._base_qimage)
+
+        self.setMinimumSize(300, 200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet('background-color: #1a1a1a; border: 1px solid #444444; border-radius: 4px;')
+        self._redraw()
+
+    # --- public update methods ---
+
+    def update_gps(self, lat, lon):
+        self._gps_pos = (lat, lon)
+        self._redraw()
+
+    def update_setpoint(self, lat, lon):
+        self._has_actual_setpoint = True
+        self._setpoint = (lat, lon)
+        self._redraw()
+
+    def update_preview_setpoint(self, lat, lon):
+        if not self._has_actual_setpoint:
+            self._preview_sp = (lat, lon)
+            self._redraw()
+
+    def update_path(self, path_points):
+        """path_points: list of (lat, lon)."""
+        self._path = list(path_points)
+        self._redraw()
+
+    def clear_actual_setpoint(self):
+        self._has_actual_setpoint = False
+        self._setpoint = None
+
+    def set_manual_waypoint(self, lat, lon):
+        self._manual_wp = (lat, lon)
+        self._redraw()
+
+    def clear_manual_waypoint(self):
+        self._manual_wp = None
+        self._redraw()
+
+    # --- coordinate helpers ---
+
+    def _widget_to_image_coords(self, wx, wy):
+        """Convert widget pixel coords to original image coords, accounting for scaling."""
+        pm = self.pixmap()
+        if pm is None:
+            return None, None
+        # The pixmap is scaled and centered inside this QLabel
+        pm_w, pm_h = pm.width(), pm.height()
+        lbl_w, lbl_h = self.width(), self.height()
+        offset_x = (lbl_w - pm_w) // 2
+        offset_y = (lbl_h - pm_h) // 2
+        ix = wx - offset_x
+        iy = wy - offset_y
+        if ix < 0 or iy < 0 or ix >= pm_w or iy >= pm_h:
+            return None, None
+        # Scale to original image size
+        orig_w = self._base_pixmap.width()
+        orig_h = self._base_pixmap.height()
+        orig_x = int(ix * orig_w / pm_w)
+        orig_y = int(iy * orig_h / pm_h)
+        return orig_x, orig_y
+
+    def _gps_to_widget(self, lat, lon):
+        """Convert GPS to widget pixel coords (for drawing on the scaled pixmap)."""
+        px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+        pm = self.pixmap()
+        if pm is None:
+            return None, None
+        scale_x = pm.width() / self._base_pixmap.width()
+        scale_y = pm.height() / self._base_pixmap.height()
+        return int(px * scale_x), int(py * scale_y)
+
+    # --- mouse events ---
+
+    def mousePressEvent(self, event):
+        if not self.manual_mode:
+            return
+        ix, iy = self._widget_to_image_coords(event.x(), event.y())
+        if ix is None:
+            return
+        lat, lon = self.pix_gps_map.pixel_to_gps(ix, iy)
+        self.set_manual_waypoint(lat, lon)
+        self.waypoint_clicked.emit(lat, lon)
+
+    # --- rendering ---
+
+    def _redraw(self):
+        """Redraw the map with all overlays."""
+        # Scale base pixmap to fit widget while keeping aspect ratio
+        target_w = self.width() if self.width() > 10 else 600
+        target_h = self.height() if self.height() > 10 else 400
+        scaled = self._base_pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+        painter = QPainter(scaled)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        scale_x = scaled.width() / self._base_pixmap.width()
+        scale_y = scaled.height() / self._base_pixmap.height()
+
+        # Draw AO polygon (cyan, semi-transparent)
+        ao_coords = self.pix_gps_map.ao_coords
+        if len(ao_coords) >= 3:
+            ao_points = []
+            for lat, lon in ao_coords:
+                px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+                ao_points.append(QPoint(int(px * scale_x), int(py * scale_y)))
+            painter.setPen(QPen(QColor(0, 255, 255), 2))
+            painter.setBrush(QBrush(QColor(0, 255, 255, 35)))
+            painter.drawPolygon(QPolygon(ao_points))
+
+        # Draw NFZ polygons (red, semi-transparent)
+        for nfz_coords in self.pix_gps_map.nfz_coords_list:
+            if len(nfz_coords) >= 3:
+                nfz_points = []
+                for lat, lon in nfz_coords:
+                    px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+                    nfz_points.append(QPoint(int(px * scale_x), int(py * scale_y)))
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                painter.setBrush(QBrush(QColor(255, 0, 0, 50)))
+                painter.drawPolygon(QPolygon(nfz_points))
+
+        # Draw planned path (yellow line)
+        if len(self._path) >= 2:
+            pen = QPen(QColor(255, 235, 59), 3)
+            pen.setStyle(Qt.SolidLine)
+            painter.setPen(pen)
+            for i in range(len(self._path) - 1):
+                lat1, lon1 = self._path[i]
+                lat2, lon2 = self._path[i + 1]
+                px1, py1 = self.pix_gps_map.gps_to_pixel(lat1, lon1)
+                px2, py2 = self.pix_gps_map.gps_to_pixel(lat2, lon2)
+                painter.drawLine(
+                    int(px1 * scale_x), int(py1 * scale_y),
+                    int(px2 * scale_x), int(py2 * scale_y)
+                )
+
+        # Draw manual waypoint (orange diamond)
+        if self._manual_wp is not None:
+            lat, lon = self._manual_wp
+            px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+            sx, sy = int(px * scale_x), int(py * scale_y)
+            pen = QPen(QColor(255, 152, 0), 2)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor(255, 152, 0, 180)))
+            size = 8
+            points = [
+                QPoint(sx, sy - size),
+                QPoint(sx + size, sy),
+                QPoint(sx, sy + size),
+                QPoint(sx - size, sy),
+            ]
+            painter.drawPolygon(QPolygon(points))
+
+        # Draw goal / setpoint marker (green or yellow-green)
+        goal = self._setpoint if self._has_actual_setpoint else self._preview_sp
+        goal_color = QColor(102, 187, 106) if self._has_actual_setpoint else QColor(153, 153, 51)
+        if goal is not None:
+            lat, lon = goal
+            px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+            sx, sy = int(px * scale_x), int(py * scale_y)
+            # Crosshair + circle
+            pen = QPen(goal_color, 2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPoint(sx, sy), 10, 10)
+            painter.drawLine(sx - 14, sy, sx + 14, sy)
+            painter.drawLine(sx, sy - 14, sx, sy + 14)
+
+        # Draw current position (blue dot with white border)
+        if self._gps_pos is not None:
+            lat, lon = self._gps_pos
+            px, py = self.pix_gps_map.gps_to_pixel(lat, lon)
+            sx, sy = int(px * scale_x), int(py * scale_y)
+            # White border
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            painter.setBrush(QBrush(QColor(33, 150, 243)))
+            painter.drawEllipse(QPoint(sx, sy), 7, 7)
+
+        painter.end()
+        self.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._redraw()
+
 
 class WaypointGuiWindow(QMainWindow):
     """Main Qt window for waypoint planner control."""
@@ -196,7 +454,7 @@ class WaypointGuiWindow(QMainWindow):
         self.signal_bridge = signal_bridge
         
         self.setWindowTitle('Waypoint Planner Control')
-        self.setMinimumSize(500, 600)
+        self.setMinimumSize(1000, 700)
         
         # Connect signals
         self.signal_bridge.state_changed.connect(self._update_state_display)
@@ -206,19 +464,29 @@ class WaypointGuiWindow(QMainWindow):
         self.signal_bridge.mavros_state_changed.connect(self._update_mavros_state)
         self.signal_bridge.satellites_changed.connect(self._update_satellites)
         self.signal_bridge.statustext_changed.connect(self._update_statustext)
+        self.signal_bridge.path_changed.connect(self._update_path_display)
         
+        # Try to load the satellite map
+        self.pix_gps_map = None
+        map_file = self.ros_node.satellite_map_file
+        if map_file and os.path.exists(map_file):
+            try:
+                from waypoint_planner.pix_gps_map import PixGpsMap
+                self.pix_gps_map = PixGpsMap(map_file)
+            except Exception as e:
+                print(f'[WaypointGUI] Failed to load satellite map: {e}')
+
         self._setup_ui()
         
         # Current state
         self.current_state = 'UNKNOWN'
-        # Track whether an actual setpoint (commands vehicle) is active; previews are ignored while true
         self._has_actual_setpoint = False
 
         # Track last received state time and start a timer to detect timeouts
         self.last_state_time = None
         self._state_timeout_s = 3.0
         self._state_timer = QTimer(self)
-        self._state_timer.setInterval(1000)  # check every second
+        self._state_timer.setInterval(1000)
         self._state_timer.timeout.connect(self._check_state_timeout)
         self._state_timer.start()
     
@@ -226,10 +494,17 @@ class WaypointGuiWindow(QMainWindow):
         """Set up the UI components."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
-        layout = QVBoxLayout(central_widget)
-        layout.setSpacing(15)
-        layout.setContentsMargins(15, 15, 15, 15)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        # ====== LEFT PANEL: controls ======
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(480)
+        left_panel.setMinimumWidth(400)
+        layout = QVBoxLayout(left_panel)
+        layout.setSpacing(12)
+        layout.setContentsMargins(5, 5, 5, 5)
         
         # State display
         state_group = QGroupBox('Current State')
@@ -314,7 +589,6 @@ class WaypointGuiWindow(QMainWindow):
         button_layout = QHBoxLayout(button_group)
         button_layout.setSpacing(10)
         
-        # Takeoff button
         self.takeoff_btn = QPushButton('TAKEOFF')
         self.takeoff_btn.setMinimumHeight(50)
         self.takeoff_btn.setFont(QFont('Arial', 12, QFont.Bold))
@@ -322,7 +596,6 @@ class WaypointGuiWindow(QMainWindow):
         self.takeoff_btn.clicked.connect(self._on_takeoff)
         button_layout.addWidget(self.takeoff_btn)
         
-        # Land button
         self.land_btn = QPushButton('LAND')
         self.land_btn.setMinimumHeight(50)
         self.land_btn.setFont(QFont('Arial', 12, QFont.Bold))
@@ -330,7 +603,6 @@ class WaypointGuiWindow(QMainWindow):
         self.land_btn.clicked.connect(self._on_land)
         button_layout.addWidget(self.land_btn)
         
-        # Abort button
         self.abort_btn = QPushButton('ABORT')
         self.abort_btn.setMinimumHeight(50)
         self.abort_btn.setFont(QFont('Arial', 12, QFont.Bold))
@@ -345,7 +617,6 @@ class WaypointGuiWindow(QMainWindow):
         move_layout = QGridLayout(move_group)
         move_layout.setSpacing(8)
         
-        # Spinboxes for X, Y, Z
         self.x_spin = self._create_spinbox(-100, 100, 0.0, 'X (East)')
         self.y_spin = self._create_spinbox(-100, 100, 0.0, 'Y (North)')
         self.z_spin = self._create_spinbox(-50, 50, 0.0, 'Z (Up)')
@@ -357,7 +628,6 @@ class WaypointGuiWindow(QMainWindow):
         move_layout.addWidget(QLabel('Z (Up):'), 0, 4)
         move_layout.addWidget(self.z_spin, 0, 5)
         
-        # Move button
         self.move_btn = QPushButton('SEND MOVE')
         self.move_btn.setMinimumHeight(40)
         self.move_btn.setFont(QFont('Arial', 11, QFont.Bold))
@@ -372,7 +642,71 @@ class WaypointGuiWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet('color: #888888; padding: 8px;')
         layout.addWidget(self.status_label)
-        
+
+        layout.addStretch()
+
+        main_layout.addWidget(left_panel)
+
+        # ====== RIGHT PANEL: map ======
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Mode toggle
+        mode_group = QGroupBox('Waypoint Mode')
+        mode_layout = QHBoxLayout(mode_group)
+
+        self.autonomy_radio = QRadioButton('Autonomy')
+        self.manual_radio = QRadioButton('Manual Waypoint')
+        self.autonomy_radio.setChecked(True)
+        self.autonomy_radio.setFont(QFont('Arial', 11))
+        self.manual_radio.setFont(QFont('Arial', 11))
+
+        self.mode_btn_group = QButtonGroup(self)
+        self.mode_btn_group.addButton(self.autonomy_radio, 0)
+        self.mode_btn_group.addButton(self.manual_radio, 1)
+        self.mode_btn_group.buttonClicked.connect(self._on_mode_changed)
+
+        mode_layout.addWidget(self.autonomy_radio)
+        mode_layout.addWidget(self.manual_radio)
+
+        right_layout.addWidget(mode_group)
+
+        # Map widget
+        map_group = QGroupBox('Map View')
+        map_layout = QVBoxLayout(map_group)
+
+        if self.pix_gps_map is not None:
+            self.map_widget = MapWidget(self.pix_gps_map)
+            self.map_widget.waypoint_clicked.connect(self._on_map_waypoint_click)
+            map_layout.addWidget(self.map_widget)
+        else:
+            self.map_widget = None
+            no_map_label = QLabel('No satellite map loaded.\n\nSet satellite_map_file parameter\nto a .pkl file generated by\nextract_image_data.py')
+            no_map_label.setAlignment(Qt.AlignCenter)
+            no_map_label.setFont(QFont('Monospace', 11))
+            no_map_label.setStyleSheet('color: #888888; padding: 40px;')
+            map_layout.addWidget(no_map_label)
+
+        right_layout.addWidget(map_group)
+
+        # Map legend
+        legend_label = QLabel(
+            '<span style="color:#00ffff;">▢ AO</span> &nbsp; '
+            '<span style="color:#ff0000;">▢ NFZ</span> &nbsp; '
+            '<span style="color:#2196f3;">● Position</span> &nbsp; '
+            '<span style="color:#66bb6a;">⊕ Goal</span> &nbsp; '
+            '<span style="color:#ffeb3b;">━ Path</span> &nbsp; '
+            '<span style="color:#ff9800;">◆ Manual WP</span>'
+        )
+        legend_label.setFont(QFont('Arial', 10))
+        legend_label.setAlignment(Qt.AlignCenter)
+        legend_label.setStyleSheet('color: #aaaaaa; padding: 4px;')
+        right_layout.addWidget(legend_label)
+
+        main_layout.addWidget(right_panel, 1)  # stretch factor 1 for the map
+
         # Apply dark theme
         self.setStyleSheet('''
             QMainWindow {
@@ -401,6 +735,14 @@ class WaypointGuiWindow(QMainWindow):
                 border: 1px solid #444444;
                 border-radius: 4px;
                 padding: 4px;
+            }
+            QRadioButton {
+                color: #cccccc;
+                spacing: 6px;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
             }
         ''')
     
@@ -463,12 +805,20 @@ class WaypointGuiWindow(QMainWindow):
         self.takeoff_btn.setEnabled(state == 'IDLE')
         self.land_btn.setEnabled(state in ['TAKEOFF', 'TRACKING'])
         self.move_btn.setEnabled(state in ['TAKEOFF', 'TRACKING'])
+
+        # Reset actual setpoint flag when entering IDLE
+        if state == 'IDLE':
+            self._has_actual_setpoint = False
+            if self.map_widget:
+                self.map_widget.clear_actual_setpoint()
     
     def _update_gps_display(self, lat: float, lon: float, alt: float):
-        """Update GPS display labels."""
+        """Update GPS display labels and map."""
         self.lat_label.setText(f'Lat: {lat:.6f}')
         self.lon_label.setText(f'Lon: {lon:.6f}')
         self.alt_label.setText(f'Alt: {alt:.1f}m')
+        if self.map_widget:
+            self.map_widget.update_gps(lat, lon)
 
     def _check_state_timeout(self):
         """Check for state message timeout and update status_label accordingly."""
@@ -489,9 +839,10 @@ class WaypointGuiWindow(QMainWindow):
         self.target_lat_label.setText(f'Lat: {lat:.6f}')
         self.target_lon_label.setText(f'Lon: {lon:.6f}')
         self.target_alt_label.setText(f'Alt: {alt:.1f}m')
-        # Stronger color for active target
         for lbl in [self.target_lat_label, self.target_lon_label, self.target_alt_label]:
             lbl.setStyleSheet('color: #66bb6a; padding: 3px;')
+        if self.map_widget:
+            self.map_widget.update_setpoint(lat, lon)
 
     def _update_preview_display(self, lat: float, lon: float, alt: float):
         """Update target waypoint display for a preview setpoint only when no actual setpoint is active."""
@@ -500,9 +851,15 @@ class WaypointGuiWindow(QMainWindow):
         self.target_lat_label.setText(f'Lat: {lat:.6f}')
         self.target_lon_label.setText(f'Lon: {lon:.6f}')
         self.target_alt_label.setText(f'Alt: {alt:.1f}m')
-        # Softer color for preview
         for lbl in [self.target_lat_label, self.target_lon_label, self.target_alt_label]:
             lbl.setStyleSheet('color: #999933; padding: 3px;')
+        if self.map_widget:
+            self.map_widget.update_preview_setpoint(lat, lon)
+
+    def _update_path_display(self, path_points: list):
+        """Update planned path on the map."""
+        if self.map_widget:
+            self.map_widget.update_path(path_points)
 
     def _update_mavros_state(self, connected: bool, armed: bool, mode: str, sys_status: int):
         """Update MAVROS / FCU state display."""
@@ -527,11 +884,11 @@ class WaypointGuiWindow(QMainWindow):
     def _update_statustext(self, severity: int, text: str):
         """Update PX4 status text display. Severity: 0-3 error/warning, 4+ info."""
         if severity <= 3:
-            color = '#f44336'  # red for errors / warnings
+            color = '#f44336'
         elif severity <= 5:
-            color = '#ff9800'  # orange for notice / info
+            color = '#ff9800'
         else:
-            color = '#aaaaaa'  # grey for debug
+            color = '#aaaaaa'
         self.statustext_label.setText(f'PX4: {text}')
         self.statustext_label.setStyleSheet(f'color: {color}; padding: 3px;')
 
@@ -553,6 +910,23 @@ class WaypointGuiWindow(QMainWindow):
         z = self.z_spin.value()
         success, msg = self.ros_node.send_relative_move(x, y, z)
         self.status_label.setText(msg)
+
+    def _on_mode_changed(self, button):
+        """Handle mode toggle between Autonomy and Manual Waypoint."""
+        is_manual = self.manual_radio.isChecked()
+        if self.map_widget:
+            self.map_widget.manual_mode = is_manual
+            if not is_manual:
+                self.map_widget.clear_manual_waypoint()
+        mode_name = 'Manual Waypoint' if is_manual else 'Autonomy'
+        self.status_label.setText(f'Mode: {mode_name}')
+
+    def _on_map_waypoint_click(self, lat: float, lon: float):
+        """Handle a manual waypoint click on the map."""
+        success, msg = self.ros_node.send_goal(lat, lon)
+        self.status_label.setText(f'Manual WP: {lat:.6f}, {lon:.6f}')
+
+
 
 
 def main(args=None):

@@ -22,3 +22,7 @@ waypoint_planner:
     altitude_threshold: 1.0
     position_threshold: 2.0
     landing_altitude: 0.5
+
+waypoint_gui:
+  ros__parameters:
+    satellite_map_file: '/root/mfa_ws/src/aerial_waypoint_manager/waypoint_sampler/satellite_map.pkl'

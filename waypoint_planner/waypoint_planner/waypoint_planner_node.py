@@ -119,6 +119,8 @@ class WaypointPlannerNode(Node):
         # Preview publisher: used to advertise where takeoff would go without commanding the vehicle
         self.preview_pub = self.create_publisher(GeoPoseStamped, 'waypoint_planner/preview_setpoint', 10)
         self.path_pub = self.create_publisher(Path, waypoint_response_topic, 10)
+        # GPS-coordinate path for GUI overlay (lat/lon/alt in pose.position x/y/z)
+        self.gps_path_pub = self.create_publisher(Path, '~/planned_path_gps', 10)
         self.state_pub = self.create_publisher(String, state_topic, 10)
 
         # Subscribers
@@ -210,6 +212,7 @@ class WaypointPlannerNode(Node):
         self.current_path = None
         self.current_path_idx = 0
         self.current_setpoint = None
+        self._publish_gps_path([])  # Clear path on GUI
         self._set_state(FlightState.IDLE)
         response.success = True
         response.message = 'Aborted, now in IDLE state'
@@ -294,6 +297,7 @@ class WaypointPlannerNode(Node):
 
             # Publish path for visualization
             self._publish_path(path)
+            self._publish_gps_path(path)
 
             # Set first waypoint as current setpoint
             if len(self.current_path) > 0:
@@ -302,6 +306,7 @@ class WaypointPlannerNode(Node):
         except nx.NetworkXNoPath:
             self.get_logger().error('No path found between start and goal')
             self._publish_path([])
+            self._publish_gps_path([])
 
     def _publish_path(self, path):
         """Publish planned path for visualization."""
@@ -320,6 +325,28 @@ class WaypointPlannerNode(Node):
             poses.append(ps)
         path_msg.poses = poses
         self.path_pub.publish(path_msg)
+
+    def _publish_gps_path(self, path):
+        """Publish planned path in GPS coordinates for GUI map overlay.
+        
+        Each pose stores: position.x = latitude, position.y = longitude,
+        position.z = altitude (takeoff alt).
+        """
+        path_msg = Path()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = 'map'
+        alt = getattr(self, 'target_takeoff_altitude', 0.0)
+        poses = []
+        for i in path:
+            lon, lat = self.waypoints[i]
+            ps = PoseStamped()
+            ps.header = path_msg.header
+            ps.pose.position.x = float(lat)
+            ps.pose.position.y = float(lon)
+            ps.pose.position.z = float(alt)
+            poses.append(ps)
+        path_msg.poses = poses
+        self.gps_path_pub.publish(path_msg)
 
     def _set_waypoint_setpoint(self, waypoint_idx: int):
         """Set current setpoint from waypoint index."""

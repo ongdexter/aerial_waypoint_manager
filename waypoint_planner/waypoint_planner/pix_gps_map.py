@@ -1,35 +1,28 @@
 import numpy as np
-import os
-from PIL import Image
 import pickle
+
 
 class PixGpsMap:    
     def __init__(self, pkl_path):
-        # Load all data
         with open(pkl_path, 'rb') as f:
             map_data = pickle.load(f)
         
         self.image = map_data['image']
         self.bounds = map_data['bounds']
         self.image_shape = map_data['image_shape']
+        self.ao_coords = map_data.get('ao_coords', [])
+        self.nfz_coords_list = map_data.get('nfz_coords_list', [])
+        self.nfz_names = map_data.get('nfz_names', [])
         
-        # Extract bounds
         self.north = self.bounds['north']
         self.south = self.bounds['south']
         self.east = self.bounds['east']
         self.west = self.bounds['west']
         
-        # Calculate spans
         self.lat_span = self.north - self.south
         self.lon_span = self.east - self.west
         
-        # Image dimensions
         self.height, self.width = self.image_shape[:2]
-        
-        print(f"PixGpsMap loaded:")
-        print(f"  Bounds: N={self.north:.6f}, S={self.south:.6f}, E={self.east:.6f}, W={self.west:.6f}")
-        print(f"  Image: {self.width}x{self.height} px")
-        print(f"  Resolution: ~{self.lat_span*111000/self.height:.2f}m/pixel")
     
     def gps_to_pixel(self, lat, lon):
         lat_norm = (lat - self.south) / self.lat_span
@@ -59,7 +52,3 @@ class PixGpsMap:
     
     def get_image(self):
         return self.image
-    
-    def save_image(self, filepath):
-        Image.fromarray(self.image).save(filepath)
-        print(f"Image saved to: {filepath}")
