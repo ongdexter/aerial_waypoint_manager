@@ -15,7 +15,8 @@ from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from std_msgs.msg import String, Empty
 from std_srvs.srv import Trigger
 from geographic_msgs.msg import GeoPoseStamped
-
+from mavros_msgs.msg import GlobalPositionTarget
+from std_msgs.msg import Float64
 
 class FlightState(Enum):
     """FSM states for the waypoint planner."""
@@ -41,6 +42,7 @@ class WaypointPlannerNode(Node):
 
         # Topics
         self.declare_parameter('uav_gps_topic', '/mavros/global_position/global')
+        self.declare_parameter('uav_altitude_topic', '/mavros/global_position/rel_alt')
         self.declare_parameter('goal_topic', 'waypoint_request')
         self.declare_parameter('waypoint_response_topic', 'waypoint_response')
         self.declare_parameter('setpoint_topic', '/mavros/setpoint/global')
@@ -58,7 +60,6 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('fsm_rate', 2.0)
         self.declare_parameter('altitude_threshold', 1.0)
         self.declare_parameter('position_threshold', 2.0)
-        self.declare_parameter('landing_altitude', 0.5)
 
         # Load parameters
         waypoint_graph_file = self.get_parameter('waypoint_graph_file').get_parameter_value().string_value
@@ -72,7 +73,6 @@ class WaypointPlannerNode(Node):
         self.fsm_rate = self.get_parameter('fsm_rate').get_parameter_value().double_value
         self.altitude_threshold = self.get_parameter('altitude_threshold').get_parameter_value().double_value
         self.position_threshold = self.get_parameter('position_threshold').get_parameter_value().double_value
-        self.landing_altitude = self.get_parameter('landing_altitude').get_parameter_value().double_value
 
         # Load waypoint graph
         if not os.path.exists(waypoint_graph_file):
@@ -103,7 +103,9 @@ class WaypointPlannerNode(Node):
         self.current_gps = None
         self.home_latitude = None
         self.home_longitude = None
-        self.home_altitude = None
+        self.home_altitude_rel = None
+        self.home_altitude_amsl = None
+        self.current_altitude_rel = None # we always work in relative altitude until publishing setpoints in AMSL
 
         # Path tracking
         self.current_path = None
@@ -114,6 +116,7 @@ class WaypointPlannerNode(Node):
 
         # Get topic names
         uav_gps_topic = self.get_parameter('uav_gps_topic').get_parameter_value().string_value
+        uav_altitude_topic = self.get_parameter('uav_altitude_topic').get_parameter_value().string_value
         goal_topic = self.get_parameter('goal_topic').get_parameter_value().string_value
         waypoint_response_topic = self.get_parameter('waypoint_response_topic').get_parameter_value().string_value
         setpoint_topic = self.get_parameter('setpoint_topic').get_parameter_value().string_value
@@ -122,7 +125,7 @@ class WaypointPlannerNode(Node):
 
         # Publishers
         # Use GeoPoseStamped for setpoints (includes orientation) so we can enforce yaw=0 (north)
-        self.setpoint_pub = self.create_publisher(GeoPoseStamped, setpoint_topic, 10)
+        self.setpoint_pub = self.create_publisher(GlobalPositionTarget, setpoint_topic, 10)
         # Preview publisher: used to advertise where takeoff would go without commanding the vehicle
         self.preview_pub = self.create_publisher(GeoPoseStamped, 'waypoint_planner/preview_setpoint', 10)
         self.path_pub = self.create_publisher(Path, waypoint_response_topic, 10)
@@ -132,20 +135,21 @@ class WaypointPlannerNode(Node):
         self.waypoint_mode_pub = self.create_publisher(String, '~/waypoint_mode', 10)
 
         # Subscribers
-        self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self._on_gps, 10)
-        self.goal_sub = self.create_subscription(NavSatFix, goal_topic, self._on_goal, 10)
-        self.manual_goal_sub = self.create_subscription(NavSatFix, '~/manual_waypoint', self._on_manual_goal, 10)
-        self.land_sub = self.create_subscription(Empty, land_topic, self._on_land, 10)
-        self.mode_sub = self.create_subscription(String, '~/set_waypoint_mode', self._on_set_mode, 10)
+        self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self.on_gps, 10)
+        self.altitude_sub = self.create_subscription(Float64, uav_altitude_topic, self.on_rel_altitude, 10)
+        self.goal_sub = self.create_subscription(NavSatFix, goal_topic, self.on_goal, 10)
+        self.manual_goal_sub = self.create_subscription(NavSatFix, '~/manual_waypoint', self.on_manual_goal, 10)
+        self.land_sub = self.create_subscription(Empty, land_topic, self.on_land, 10)
+        self.mode_sub = self.create_subscription(String, '~/set_waypoint_mode', self.on_set_mode, 10)
 
         # Services for FSM control
-        self.takeoff_srv = self.create_service(Trigger, '~/takeoff', self._srv_takeoff)
-        self.land_srv = self.create_service(Trigger, '~/land_srv', self._srv_land)
-        self.abort_srv = self.create_service(Trigger, '~/abort', self._srv_abort)
+        self.takeoff_srv = self.create_service(Trigger, '~/takeoff', self.srv_takeoff)
+        self.land_srv = self.create_service(Trigger, '~/land_srv', self.srv_land)
+        self.abort_srv = self.create_service(Trigger, '~/abort', self.srv_abort)
 
         # Relative move subscriber (receives X,Y,Z offsets in meters)
         self.relative_move_sub = self.create_subscription(
-            Point, '~/relative_move', self._on_relative_move, 10
+            Point, '~/relative_move', self.on_relative_move, 10
         )
 
         # FSM timer
@@ -154,7 +158,7 @@ class WaypointPlannerNode(Node):
 
         self.get_logger().info(f'Waypoint planner FSM started in {self.state.name} state')
 
-    def _publish_state(self):
+    def publish_state(self):
         """Publish current FSM state."""
         msg = String()
         msg.data = self.state.name
@@ -164,18 +168,22 @@ class WaypointPlannerNode(Node):
         mode_msg.data = self.waypoint_mode.name
         self.waypoint_mode_pub.publish(mode_msg)
 
-    def _set_state(self, new_state: FlightState):
+    def set_state(self, new_state: FlightState):
         """Transition to a new state."""
         if new_state != self.state:
             self.get_logger().info(f'State transition: {self.state.name} -> {new_state.name}')
             self.state = new_state
-            self._publish_state()
+            self.publish_state()
 
-    def _on_gps(self, msg: NavSatFix):
+    def on_gps(self, msg: NavSatFix):
         """Handle GPS updates."""
         self.current_gps = msg
 
-    def _srv_takeoff(self, request, response):
+    def on_rel_altitude(self, msg: Float64):
+        """Handle relative altitude updates."""
+        self.current_altitude_rel = msg.data
+
+    def srv_takeoff(self, request, response):
         """Service callback for takeoff command."""
         if self.state == FlightState.IDLE:
             if self.current_gps is None:
@@ -189,25 +197,25 @@ class WaypointPlannerNode(Node):
                 else:
                     self.home_latitude = self.takeoff_latitude
                     self.home_longitude = self.takeoff_longitude
-                self.home_altitude = self.current_gps.altitude
-                self.target_takeoff_altitude = self.home_altitude + self.takeoff_altitude
-                self._set_gps_setpoint(self.home_latitude, self.home_longitude, self.target_takeoff_altitude)
-                self._set_state(FlightState.TAKEOFF)
+                self.home_altitude_rel = self.current_altitude_rel
+                self.home_altitude_amsl = self.current_gps.altitude
+                self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
+                self.set_state(FlightState.TAKEOFF)
                 response.success = True
-                response.message = f'Taking off to {self.target_takeoff_altitude:.1f}m ({self.takeoff_altitude}m above home)'
+                response.message = f'Taking off to {self.takeoff_altitude:.1f}m'
         else:
             response.success = False
             response.message = f'Cannot takeoff from {self.state.name} state'
         return response
 
-    def _srv_land(self, request, response):
+    def srv_land(self, request, response):
         """Service callback for land command."""
         if self.state == FlightState.TRACKING:
-            self._set_state(FlightState.RETURNING)
+            self.set_state(FlightState.RETURNING)
             response.success = True
             response.message = 'Returning to home and landing'
         elif self.state == FlightState.TAKEOFF:
-            self._set_state(FlightState.LANDING)
+            self.set_state(FlightState.LANDING)
             response.success = True
             response.message = 'Landing immediately'
         elif self.state == FlightState.RETURNING:
@@ -221,29 +229,29 @@ class WaypointPlannerNode(Node):
             response.message = f'Cannot land from {self.state.name} state'
         return response
 
-    def _srv_abort(self, request, response):
+    def srv_abort(self, request, response):
         """Service callback for abort/emergency stop."""
         self.current_path = None
         self.current_path_idx = 0
         self.current_setpoint = None
-        self._publish_gps_path([])  # Clear path on GUI
-        self._set_state(FlightState.IDLE)
+        self.publish_gps_path([])  # Clear path on GUI
+        self.set_state(FlightState.IDLE)
         response.success = True
         response.message = 'Aborted, now in IDLE state'
         return response
 
-    def _on_land(self, msg: Empty):
+    def on_land(self, msg: Empty):
         """Handle land command."""
         if self.state == FlightState.TRACKING:
             self.get_logger().info('Land command received, returning to home')
-            self._set_state(FlightState.RETURNING)
+            self.set_state(FlightState.RETURNING)
         elif self.state in [FlightState.TAKEOFF, FlightState.IDLE]:
             self.get_logger().info('Land command received during takeoff/idle, landing immediately')
-            self._set_state(FlightState.LANDING)
+            self.set_state(FlightState.LANDING)
         else:
             self.get_logger().info(f'Land command received but already in {self.state.name}')
 
-    def _on_relative_move(self, msg: Point):
+    def on_relative_move(self, msg: Point):
         """Handle relative move command (X, Y, Z offsets in meters)."""
         if self.state not in [FlightState.TRACKING, FlightState.TAKEOFF]:
             self.get_logger().warning(f'Relative move received but in {self.state.name} state, ignoring')
@@ -261,7 +269,7 @@ class WaypointPlannerNode(Node):
         # Apply offsets (X = East, Y = North, Z = altitude)
         new_x = current_x + msg.x
         new_y = current_y + msg.y
-        new_alt = self.current_gps.altitude + msg.z
+        new_alt = self.current_altitude_amsl + msg.z
 
         # Convert back to GPS
         inv_transformer = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
@@ -270,18 +278,18 @@ class WaypointPlannerNode(Node):
         # Clear any existing path and set direct setpoint
         self.current_path = None
         self.current_path_idx = 0
-        self._set_gps_setpoint(new_lat, new_lon, new_alt)
+        self.set_gps_setpoint(new_lat, new_lon, new_alt)
         
         # Ensure we're in tracking mode
         if self.state == FlightState.TAKEOFF:
-            self._set_state(FlightState.TRACKING)
+            self.set_state(FlightState.TRACKING)
 
         self.get_logger().info(
             f'Relative move: ({msg.x:.1f}, {msg.y:.1f}, {msg.z:.1f})m -> '
             f'lat={new_lat:.6f}, lon={new_lon:.6f}, alt={new_alt:.1f}m'
         )
 
-    def _on_set_mode(self, msg: String):
+    def on_set_mode(self, msg: String):
         """Handle waypoint mode switch request."""
         mode_str = msg.data.upper()
         try:
@@ -301,33 +309,33 @@ class WaypointPlannerNode(Node):
         if self.state in [FlightState.TRACKING, FlightState.TAKEOFF] and self.current_gps is not None:
             self.current_path = None
             self.current_path_idx = 0
-            self._set_gps_setpoint(
+            self.set_gps_setpoint(
                 self.current_gps.latitude,
                 self.current_gps.longitude,
-                self.current_setpoint['altitude'] if self.current_setpoint else self.target_takeoff_altitude
+                self.takeoff_altitude
             )
-            self._publish_gps_path([])  # Clear path overlay
+            self.publish_gps_path([])  # Clear path overlay
             self.get_logger().info('Holding current position after mode switch')
 
-    def _on_goal(self, msg: NavSatFix):
+    def on_goal(self, msg: NavSatFix):
         """Handle auto goal waypoint request."""
         if self.waypoint_mode != WaypointMode.AUTO:
             self.get_logger().warning('Auto goal received but in MANUAL mode, ignoring')
             return
-        self._process_goal(msg)
+        self.process_goal(msg)
 
-    def _on_manual_goal(self, msg: NavSatFix):
+    def on_manual_goal(self, msg: NavSatFix):
         """Handle manual goal waypoint request."""
         if self.waypoint_mode != WaypointMode.MANUAL:
             self.get_logger().warning('Manual goal received but in AUTO mode, ignoring')
             return
-        self._process_goal(msg)
+        self.process_goal(msg)
 
-    def _process_goal(self, msg: NavSatFix):
+    def process_goal(self, msg: NavSatFix):
         """Plan a graph-based path to the goal GPS coordinate."""
         if self.state not in [FlightState.TRACKING, FlightState.TAKEOFF]:
             self.get_logger().warning(f'Goal received but in {self.state.name} state, ignoring')
-            return
+            #return
 
         if self.current_gps is None:
             self.get_logger().error('Goal received but no GPS fix available')
@@ -335,7 +343,7 @@ class WaypointPlannerNode(Node):
 
         # If in takeoff, transition to tracking
         if self.state == FlightState.TAKEOFF:
-            self._set_state(FlightState.TRACKING)
+            self.set_state(FlightState.TRACKING)
 
         # Plan path
         start_utm = self.transformer.transform(self.current_gps.longitude, self.current_gps.latitude)
@@ -352,19 +360,19 @@ class WaypointPlannerNode(Node):
             self.get_logger().info(f'Path found with {len(path)} waypoints')
 
             # Publish path for visualization
-            self._publish_path(path)
-            self._publish_gps_path(path)
+            self.publish_path(path)
+            self.publish_gps_path(path)
 
             # Set first waypoint as current setpoint
             if len(self.current_path) > 0:
-                self._set_waypoint_setpoint(self.current_path[0])
+                self.set_waypoint_setpoint(self.current_path[0])
 
         except nx.NetworkXNoPath:
             self.get_logger().error('No path found between start and goal')
-            self._publish_path([])
-            self._publish_gps_path([])
+            self.publish_path([])
+            self.publish_gps_path([])
 
-    def _publish_path(self, path):
+    def publish_path(self, path):
         """Publish planned path for visualization."""
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
@@ -382,7 +390,7 @@ class WaypointPlannerNode(Node):
         path_msg.poses = poses
         self.path_pub.publish(path_msg)
 
-    def _publish_gps_path(self, path):
+    def publish_gps_path(self, path):
         """Publish planned path in GPS coordinates for GUI map overlay.
         
         Each pose stores: position.x = latitude, position.y = longitude,
@@ -391,7 +399,7 @@ class WaypointPlannerNode(Node):
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = 'map'
-        alt = getattr(self, 'target_takeoff_altitude', 0.0)
+        alt = self.takeoff_altitude
         poses = []
         for i in path:
             lon, lat = self.waypoints[i]
@@ -404,21 +412,19 @@ class WaypointPlannerNode(Node):
         path_msg.poses = poses
         self.gps_path_pub.publish(path_msg)
 
-    def _set_waypoint_setpoint(self, waypoint_idx: int):
+    def set_waypoint_setpoint(self, waypoint_idx: int):
         """Set current setpoint from waypoint index."""
         if waypoint_idx < 0 or waypoint_idx >= len(self.waypoints):
             return
         lon, lat = self.waypoints[waypoint_idx]
-        # Fly all waypoints at the same AMSL altitude computed at takeoff
-        alt = self.target_takeoff_altitude
         self.current_setpoint = {
             'latitude': lat,
             'longitude': lon,
-            'altitude': alt
+            'altitude': self.takeoff_altitude
         }
-        self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m AMSL')
+        self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={self.takeoff_altitude:.1f}m')
 
-    def _set_gps_setpoint(self, lat: float, lon: float, alt: float):
+    def set_gps_setpoint(self, lat: float, lon: float, alt: float):
         """Set current setpoint from GPS coordinates."""
         self.current_setpoint = {
             'latitude': lat,
@@ -426,21 +432,22 @@ class WaypointPlannerNode(Node):
             'altitude': alt
         }
 
-    def _publish_setpoint(self):
-        """Publish current setpoint (commands the vehicle) using GeoPoseStamped with north orientation."""
+    def publish_setpoint(self):
+        """Publish current setpoint (commands the vehicle) using GlobalPositionTarget with north orientation."""
         if self.current_setpoint is None:
             return
-        msg = GeoPoseStamped()
+        
+        msg = GlobalPositionTarget()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'map'
-        msg.pose.position.latitude = float(self.current_setpoint['latitude'])
-        msg.pose.position.longitude = float(self.current_setpoint['longitude'])
-        msg.pose.position.altitude = float(self.current_setpoint['altitude'])
-        # Yaw 0 => quaternion (0,0,0,1)
-        msg.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        msg.coordinate_frame = 6  # amsl altitude
+        msg.type_mask = 504 # position + yaw
+        msg.latitude = float(self.current_setpoint['latitude'])
+        msg.longitude = float(self.current_setpoint['longitude'])
+        msg.altitude = self.home_altitude_amsl + float(self.current_setpoint['altitude']) # convert from rel to amsl
+        msg.yaw = 0.0  # align north
         self.setpoint_pub.publish(msg)
 
-    def _publish_preview_setpoint(self, lat: float, lon: float, alt: float):
+    def publish_preview_setpoint(self, lat: float, lon: float, alt: float):
         """Publish a preview setpoint for UI only (does NOT command the vehicle) using GeoPoseStamped."""
         msg = GeoPoseStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -451,7 +458,7 @@ class WaypointPlannerNode(Node):
         msg.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.preview_pub.publish(msg)
 
-    def _distance_to_setpoint(self) -> float:
+    def distance_to_setpoint(self) -> float:
         """Calculate horizontal distance to current setpoint in meters."""
         if self.current_gps is None or self.current_setpoint is None:
             return float('inf')
@@ -459,28 +466,22 @@ class WaypointPlannerNode(Node):
         tx, ty = self.transformer.transform(self.current_setpoint['longitude'], self.current_setpoint['latitude'])
         return ((ux - tx) ** 2 + (uy - ty) ** 2) ** 0.5
 
-    def _altitude_error(self) -> float:
-        """Calculate altitude error to current setpoint."""
-        if self.current_gps is None or self.current_setpoint is None:
-            return float('inf')
-        return abs(self.current_gps.altitude - self.current_setpoint['altitude'])
-
-    def _update_fsm(self):
+    def update_fsm(self):
         """Main FSM update loop."""
-        self._publish_state()
+        self.publish_state()
 
         if self.state == FlightState.IDLE:
-            self._handle_idle()
+            self.handle_idle()
         elif self.state == FlightState.TAKEOFF:
-            self._handle_takeoff()
+            self.handle_takeoff()
         elif self.state == FlightState.TRACKING:
-            self._handle_tracking()
+            self.handle_tracking()
         elif self.state == FlightState.RETURNING:
-            self._handle_returning()
+            self.handle_returning()
         elif self.state == FlightState.LANDING:
-            self._handle_landing()
+            self.handle_landing()
 
-    def _handle_idle(self):
+    def handle_idle(self):
         """Handle IDLE state - publish planned takeoff setpoint for UI preview only."""
         if self.current_gps is None:
             return
@@ -492,27 +493,29 @@ class WaypointPlannerNode(Node):
         else:
             lat = self.takeoff_latitude
             lon = self.takeoff_longitude
-        alt = self.current_gps.altitude + self.takeoff_altitude
+        alt = self.current_altitude_rel
 
         # Publish preview setpoint (UI only). Do NOT change current_setpoint or command the vehicle.
-        self._publish_preview_setpoint(lat, lon, alt)
+        self.publish_preview_setpoint(lat, lon, alt)
 
-    def _handle_takeoff(self):
+    def handle_takeoff(self):
         """Handle TAKEOFF state - ascending to takeoff altitude."""
-        self._publish_setpoint()
+        self.publish_setpoint()
 
         if self.current_gps is None:
             return
 
         # Check if reached takeoff altitude (relative to home)
-        alt_error = abs(self.current_gps.altitude - self.target_takeoff_altitude)
+        alt_error = abs(self.current_altitude_rel - self.takeoff_altitude)
         if alt_error <= self.altitude_threshold:
-            self.get_logger().info(f'Reached takeoff altitude ({self.current_gps.altitude:.1f}m, {self.takeoff_altitude}m above home)')
-            self._set_state(FlightState.TRACKING)
+            self.get_logger().info(f'Reached takeoff altitude ({self.current_altitude_rel:.1f}m), transitioning to TRACKING')
+            self.set_state(FlightState.TRACKING)
+        else:
+            self.get_logger().info(f'Climbing to takeoff altitude ({self.takeoff_altitude:.1f}m, currently at {self.current_altitude_rel:.1f}m, error={alt_error:.1f}m)')
 
-    def _handle_tracking(self):
+    def handle_tracking(self):
         """Handle TRACKING state - following waypoint path."""
-        self._publish_setpoint()
+        self.publish_setpoint()
 
         if self.current_path is None or len(self.current_path) == 0:
             return
@@ -522,56 +525,55 @@ class WaypointPlannerNode(Node):
             return
 
         # Check if reached current waypoint
-        dist = self._distance_to_setpoint()
+        dist = self.distance_to_setpoint()
         if dist <= self.position_threshold:
             self.get_logger().info(f'Reached waypoint {self.current_path[self.current_path_idx]} (dist={dist:.2f}m)')
             self.current_path_idx += 1
 
             if self.current_path_idx < len(self.current_path):
-                self._set_waypoint_setpoint(self.current_path[self.current_path_idx])
+                self.set_waypoint_setpoint(self.current_path[self.current_path_idx])
             else:
                 self.get_logger().info('Reached final waypoint of path')
                 self.current_path = None
                 self.current_path_idx = 0
 
-    def _handle_returning(self):
+    def handle_returning(self):
         """Handle RETURNING state - flying back to home position."""
         # Set home as target at the same takeoff altitude (relative to home)
-        self._set_gps_setpoint(self.home_latitude, self.home_longitude, self.target_takeoff_altitude)
-        self._publish_setpoint()
+        self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
+        self.publish_setpoint()
 
         if self.current_gps is None:
             return
 
         # Check if reached home position
-        dist = self._distance_to_setpoint()
+        dist = self.distance_to_setpoint()
         if dist <= self.position_threshold:
             self.get_logger().info(f'Reached home position (dist={dist:.2f}m), landing')
-            self._set_state(FlightState.LANDING)
+            self.set_state(FlightState.LANDING)
 
-    def _handle_landing(self):
+    def handle_landing(self):
         """Handle LANDING state - return to home at takeoff altitude, then descend."""
         if self.current_gps is None:
             return
 
         # Phase 1: fly to home at takeoff altitude
-        self._set_gps_setpoint(self.home_latitude, self.home_longitude, self.target_takeoff_altitude)
-        self._publish_setpoint()
+        self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
+        self.publish_setpoint()
 
-        dist = self._distance_to_setpoint()
+        dist = self.distance_to_setpoint()
         if dist > self.position_threshold:
             # Still en-route to home horizontally
             return
 
         # Phase 2: overhead home — descend to ground
-        landing_alt_amsl = self.home_altitude + self.landing_altitude
-        self._set_gps_setpoint(self.home_latitude, self.home_longitude, landing_alt_amsl)
-        self._publish_setpoint()
+        self.set_gps_setpoint(self.home_latitude, self.home_longitude, 0.0)
+        self.publish_setpoint()
 
-        if self.current_gps.altitude <= landing_alt_amsl + self.altitude_threshold:
+        if self.current_altitude_rel <= self.altitude_threshold:
             self.get_logger().info('Landed successfully')
             self.current_setpoint = None
-            self._set_state(FlightState.IDLE)
+            self.set_state(FlightState.IDLE)
 
 
 def main(args=None):

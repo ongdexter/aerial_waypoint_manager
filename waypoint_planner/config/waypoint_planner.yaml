@@ -4,9 +4,10 @@ waypoint_planner:
     
     # Topics
     uav_gps_topic: '/mavros/global_position/global'
+    uav_altitude_topic: '/mavros/global_position/rel_alt'
     goal_topic: 'waypoint_request'
     waypoint_response_topic: 'waypoint_response'
-    setpoint_topic: '/mavros/setpoint/global'
+    setpoint_topic: '/mavros/setpoint_raw/global'
     land_topic: '~/land'
     state_topic: '~/state'
     
@@ -18,10 +19,9 @@ waypoint_planner:
     takeoff_altitude: 20.0
     
     # FSM
-    fsm_rate: 2.0
-    altitude_threshold: 1.0
+    fsm_rate: 20.0
+    altitude_threshold: 0.2
     position_threshold: 2.0
-    landing_altitude: 0.5
 
 waypoint_gui:
   ros__parameters:
