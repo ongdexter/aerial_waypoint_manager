@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Qt GUI for controlling the Waypoint Planner FSM.
-Provides buttons for Takeoff, Land, Abort, relative position commands,
+Provides buttons for Takeoff, RTH, Hold, relative position commands,
 satellite map visualization with GPS overlay, and manual waypoint mode.
 """
 
@@ -142,7 +142,7 @@ class WaypointGuiNode(Node):
         
         # Service clients
         self.takeoff_client = self.create_client(Trigger, '/waypoint_planner/takeoff')
-        self.land_client = self.create_client(Trigger, '/waypoint_planner/land_srv')
+        self.rth_client = self.create_client(Trigger, '/waypoint_planner/rth')
         self.abort_client = self.create_client(Trigger, '/waypoint_planner/abort')
         
         self.get_logger().info('Waypoint GUI node started')
@@ -201,21 +201,21 @@ class WaypointGuiNode(Node):
         self.takeoff_client.call_async(Trigger.Request())
         return True, 'Takeoff requested'
     
-    def call_land(self):
-        """Call the land service."""
-        if not self.land_client.service_is_ready():
-            self.get_logger().warning('Land service not available')
+    def call_rth(self):
+        """Call the return-to-home service."""
+        if not self.rth_client.service_is_ready():
+            self.get_logger().warning('RTH service not available')
             return False, 'Service not available'
-        self.land_client.call_async(Trigger.Request())
-        return True, 'Land requested'
+        self.rth_client.call_async(Trigger.Request())
+        return True, 'RTH requested'
     
-    def call_abort(self):
-        """Call the abort service."""
+    def call_hold(self):
+        """Call the hold service (implemented by planner abort service)."""
         if not self.abort_client.service_is_ready():
-            self.get_logger().warning('Abort service not available')
+            self.get_logger().warning('Hold service not available')
             return False, 'Service not available'
         self.abort_client.call_async(Trigger.Request())
-        return True, 'Abort requested'
+        return True, 'Hold requested'
     
     def send_relative_move(self, x: float, y: float, z: float):
         """Send a relative move command."""
@@ -495,6 +495,7 @@ class WaypointGuiWindow(QMainWindow):
         # Current state
         self.current_state = 'UNKNOWN'
         self._has_actual_setpoint = False
+        self._takeoff_used = False
 
         # Track last received state time and start a timer to detect timeouts
         self.last_state_time = None
@@ -610,19 +611,19 @@ class WaypointGuiWindow(QMainWindow):
         self.takeoff_btn.clicked.connect(self._on_takeoff)
         button_layout.addWidget(self.takeoff_btn)
         
-        self.land_btn = QPushButton('LAND')
-        self.land_btn.setMinimumHeight(50)
-        self.land_btn.setFont(QFont('Arial', 12, QFont.Bold))
-        self.land_btn.setStyleSheet(self._button_style('#1565c0', '#1976d2', '#0d47a1'))
-        self.land_btn.clicked.connect(self._on_land)
-        button_layout.addWidget(self.land_btn)
+        self.rth_btn = QPushButton('RTH')
+        self.rth_btn.setMinimumHeight(50)
+        self.rth_btn.setFont(QFont('Arial', 12, QFont.Bold))
+        self.rth_btn.setStyleSheet(self._button_style('#1565c0', '#1976d2', '#0d47a1'))
+        self.rth_btn.clicked.connect(self._on_rth)
+        button_layout.addWidget(self.rth_btn)
         
-        self.abort_btn = QPushButton('ABORT')
-        self.abort_btn.setMinimumHeight(50)
-        self.abort_btn.setFont(QFont('Arial', 12, QFont.Bold))
-        self.abort_btn.setStyleSheet(self._button_style('#c62828', '#d32f2f', '#b71c1c'))
-        self.abort_btn.clicked.connect(self._on_abort)
-        button_layout.addWidget(self.abort_btn)
+        self.hold_btn = QPushButton('HOLD')
+        self.hold_btn.setMinimumHeight(50)
+        self.hold_btn.setFont(QFont('Arial', 12, QFont.Bold))
+        self.hold_btn.setStyleSheet(self._button_style('#c62828', '#d32f2f', '#b71c1c'))
+        self.hold_btn.clicked.connect(self._on_hold)
+        button_layout.addWidget(self.hold_btn)
         
         layout.addWidget(button_group)
         
@@ -673,7 +674,7 @@ class WaypointGuiWindow(QMainWindow):
 
         self.autonomy_radio = QRadioButton('Autonomy')
         self.manual_radio = QRadioButton('Manual Waypoint')
-        self.autonomy_radio.setChecked(True)
+        self.manual_radio.setChecked(True)
         self.autonomy_radio.setFont(QFont('Arial', 11))
         self.manual_radio.setFont(QFont('Arial', 11))
 
@@ -795,14 +796,16 @@ class WaypointGuiWindow(QMainWindow):
         self.last_state_time = time.time()
         self.status_label.setText('Ready')
         self.current_state = state
+
+        if state in ['TAKEOFF', 'TRACKING']:
+            self._takeoff_used = True
+
         self.state_label.setText(state)
         
         colors = {
             'IDLE': ('#888888', '#2d2d2d'),
             'TAKEOFF': ('#4caf50', '#1b3d1f'),
             'TRACKING': ('#2196f3', '#0d3251'),
-            'RETURNING': ('#ff9800', '#4d2e00'),
-            'LANDING': ('#9c27b0', '#3d0f47'),
         }
         
         fg, bg = colors.get(state, ('#888888', '#2d2d2d'))
@@ -816,8 +819,9 @@ class WaypointGuiWindow(QMainWindow):
         ''')
         
         # Update button states
-        self.takeoff_btn.setEnabled(state == 'IDLE')
-        self.land_btn.setEnabled(state in ['TAKEOFF', 'TRACKING'])
+        self.takeoff_btn.setEnabled(state == 'IDLE' and not self._takeoff_used)
+        is_manual = self.manual_radio.isChecked()
+        self.rth_btn.setEnabled(is_manual and state in ['TAKEOFF', 'TRACKING'])
         self.move_btn.setEnabled(state in ['TAKEOFF', 'TRACKING'])
 
         # Reset actual setpoint flag when entering IDLE
@@ -910,12 +914,12 @@ class WaypointGuiWindow(QMainWindow):
         success, msg = self.ros_node.call_takeoff()
         self.status_label.setText(msg)
     
-    def _on_land(self):
-        success, msg = self.ros_node.call_land()
+    def _on_rth(self):
+        success, msg = self.ros_node.call_rth()
         self.status_label.setText(msg)
     
-    def _on_abort(self):
-        success, msg = self.ros_node.call_abort()
+    def _on_hold(self):
+        success, msg = self.ros_node.call_hold()
         self.status_label.setText(msg)
     
     def _on_relative_move(self):
@@ -934,6 +938,7 @@ class WaypointGuiWindow(QMainWindow):
                 self.map_widget.clear_manual_waypoint()
         # Notify the planner node of the mode switch
         self.ros_node.send_mode('MANUAL' if is_manual else 'AUTO')
+        self.rth_btn.setEnabled(is_manual and self.current_state in ['TAKEOFF', 'TRACKING'])
         mode_name = 'Manual Waypoint' if is_manual else 'Autonomy'
         self.status_label.setText(f'Mode: {mode_name}')
 

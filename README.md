@@ -1,10 +1,10 @@
 # waypoint_planner
 
-ROS2 package for UAV waypoint planning with a Finite State Machine (FSM) for flight control. Loads a pre-built waypoint graph and provides path planning, takeoff, tracking, and landing capabilities.
+ROS2 package for UAV waypoint planning with a Finite State Machine (FSM) for flight control. Loads a pre-built waypoint graph and provides path planning, takeoff, tracking, and return-to-home capabilities.
 
 ## Features
 
-- **FSM-based flight control**: IDLE → TAKEOFF → TRACKING → RETURNING → LANDING
+- **FSM-based flight control**: IDLE → TAKEOFF → TRACKING
 - **Path planning**: A* shortest path on pre-built waypoint graph
 - **Relative position commands**: Move X/Y/Z meters from current position
 - **Qt GUI**: Control panel with state display and relative move controls
@@ -36,8 +36,6 @@ ros2 run waypoint_planner waypoint_gui
 | `IDLE` | Waiting for takeoff command |
 | `TAKEOFF` | Ascending to takeoff altitude |
 | `TRACKING` | Following waypoints or relative move commands |
-| `RETURNING` | Flying back to home position |
-| `LANDING` | Descending to ground |
 
 ## Topics
 
@@ -47,7 +45,7 @@ ros2 run waypoint_planner waypoint_gui
 | `~/state` | `String` | Current FSM state |
 | `waypoint_request` | `NavSatFix` | Goal GPS for path planning |
 | `waypoint_response` | `Path` | Planned path output |
-| `/mavros/setpoint/global` | `NavSatFix` | Setpoint output |
+| `/mavros/setpoint_raw/global` | `GlobalPositionTarget` | Setpoint output |
 | `~/relative_move` | `Point` | Relative move (X,Y,Z meters) |
 
 ## Services
@@ -55,7 +53,7 @@ ros2 run waypoint_planner waypoint_gui
 | Service | Type | Description |
 |---------|------|-------------|
 | `~/takeoff` | `Trigger` | Start takeoff from IDLE |
-| `~/land_srv` | `Trigger` | Return to home and land |
+| `~/rth` | `Trigger` | Return to home while holding current altitude |
 | `~/abort` | `Trigger` | Emergency stop → IDLE |
 
 ## Configuration
@@ -104,5 +102,5 @@ The consolidated `.pkl` file contains both the graph and waypoint GPS coordinate
 The Qt GUI (`waypoint_gui`) provides:
 - **State display**: Color-coded current FSM state
 - **GPS display**: Current lat/lon/alt
-- **Flight buttons**: TAKEOFF, LAND, ABORT
+- **Flight buttons**: TAKEOFF, RTH, HOLD
 - **Relative move**: X/Y/Z offset inputs (meters)
