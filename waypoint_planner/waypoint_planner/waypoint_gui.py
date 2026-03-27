@@ -702,8 +702,8 @@ class WaypointGuiWindow(QMainWindow):
         self.mode_btn_group.addButton(self.manual_btn, 1)
         self.mode_btn_group.buttonClicked.connect(self._on_mode_changed)
 
-        mode_layout.addWidget(self.autonomy_btn)
         mode_layout.addWidget(self.manual_btn)
+        mode_layout.addWidget(self.autonomy_btn)
 
         right_layout.addWidget(mode_group)
 
