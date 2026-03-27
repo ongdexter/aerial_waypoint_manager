@@ -26,7 +26,7 @@ from mavros_msgs.msg import State as MavrosState, StatusText
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QGroupBox, QDoubleSpinBox, QGridLayout,
-    QSplitter, QSizePolicy, QButtonGroup, QRadioButton
+    QSplitter, QSizePolicy, QButtonGroup
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QPoint
 from PyQt5.QtGui import QFont, QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPolygon
@@ -672,19 +672,38 @@ class WaypointGuiWindow(QMainWindow):
         mode_group = QGroupBox('Waypoint Mode')
         mode_layout = QHBoxLayout(mode_group)
 
-        self.autonomy_radio = QRadioButton('Autonomy')
-        self.manual_radio = QRadioButton('Manual Waypoint')
-        self.manual_radio.setChecked(True)
-        self.autonomy_radio.setFont(QFont('Arial', 11))
-        self.manual_radio.setFont(QFont('Arial', 11))
+        self.autonomy_btn = QPushButton('Autonomy')
+        self.manual_btn = QPushButton('Manual Waypoint')
+        self.autonomy_btn.setCheckable(True)
+        self.manual_btn.setCheckable(True)
+        self.manual_btn.setChecked(True)
+        self.autonomy_btn.setFont(QFont('Arial', 11))
+        self.manual_btn.setFont(QFont('Arial', 11))
+        mode_toggle_style = '''
+            QPushButton {
+                background-color: #2d2d2d;
+                color: #cccccc;
+                border: 1px solid #555555;
+                border-radius: 6px;
+                padding: 8px 12px;
+            }
+            QPushButton:checked {
+                background-color: #1565c0;
+                color: white;
+                border: 1px solid #1976d2;
+            }
+        '''
+        self.autonomy_btn.setStyleSheet(mode_toggle_style)
+        self.manual_btn.setStyleSheet(mode_toggle_style)
 
         self.mode_btn_group = QButtonGroup(self)
-        self.mode_btn_group.addButton(self.autonomy_radio, 0)
-        self.mode_btn_group.addButton(self.manual_radio, 1)
+        self.mode_btn_group.setExclusive(True)
+        self.mode_btn_group.addButton(self.autonomy_btn, 0)
+        self.mode_btn_group.addButton(self.manual_btn, 1)
         self.mode_btn_group.buttonClicked.connect(self._on_mode_changed)
 
-        mode_layout.addWidget(self.autonomy_radio)
-        mode_layout.addWidget(self.manual_radio)
+        mode_layout.addWidget(self.autonomy_btn)
+        mode_layout.addWidget(self.manual_btn)
 
         right_layout.addWidget(mode_group)
 
@@ -694,6 +713,7 @@ class WaypointGuiWindow(QMainWindow):
 
         if self.pix_gps_map is not None:
             self.map_widget = MapWidget(self.pix_gps_map)
+            self.map_widget.manual_mode = self.manual_btn.isChecked()
             self.map_widget.waypoint_clicked.connect(self._on_map_waypoint_click)
             map_layout.addWidget(self.map_widget)
         else:
@@ -750,14 +770,6 @@ class WaypointGuiWindow(QMainWindow):
                 border: 1px solid #444444;
                 border-radius: 4px;
                 padding: 4px;
-            }
-            QRadioButton {
-                color: #cccccc;
-                spacing: 6px;
-            }
-            QRadioButton::indicator {
-                width: 14px;
-                height: 14px;
             }
         ''')
     
@@ -820,7 +832,7 @@ class WaypointGuiWindow(QMainWindow):
         
         # Update button states
         self.takeoff_btn.setEnabled(state == 'IDLE' and not self._takeoff_used)
-        is_manual = self.manual_radio.isChecked()
+        is_manual = self.manual_btn.isChecked()
         self.rth_btn.setEnabled(is_manual and state in ['TAKEOFF', 'TRACKING'])
         self.move_btn.setEnabled(state in ['TAKEOFF', 'TRACKING'])
 
@@ -931,7 +943,7 @@ class WaypointGuiWindow(QMainWindow):
 
     def _on_mode_changed(self, button):
         """Handle mode toggle between Autonomy and Manual Waypoint."""
-        is_manual = self.manual_radio.isChecked()
+        is_manual = self.manual_btn.isChecked()
         if self.map_widget:
             self.map_widget.manual_mode = is_manual
             if not is_manual:

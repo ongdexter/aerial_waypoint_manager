@@ -510,6 +510,9 @@ class WaypointPlannerNode(Node):
 
         if self.current_gps is None:
             return
+        if self.current_altitude_rel is None:
+            self.get_logger().warning('TAKEOFF active but no relative altitude available yet')
+            return
 
         # Check if reached takeoff altitude (relative to home)
         alt_error = abs(self.current_altitude_rel - self.takeoff_altitude)
