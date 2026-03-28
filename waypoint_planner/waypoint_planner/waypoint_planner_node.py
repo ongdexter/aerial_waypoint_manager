@@ -101,8 +101,7 @@ class WaypointPlannerNode(Node):
         self.home_latitude = None
         self.home_longitude = None
         self.home_altitude_rel = None
-        self.home_altitude_amsl = None
-        self.current_altitude_rel = None # we always work in relative altitude until publishing setpoints in AMSL
+        self.current_altitude_rel = None # we always work in relative altitude
 
         # Path tracking
         self.current_path = None
@@ -199,7 +198,6 @@ class WaypointPlannerNode(Node):
                     self.home_latitude = self.takeoff_latitude
                     self.home_longitude = self.takeoff_longitude
                 self.home_altitude_rel = self.current_altitude_rel
-                self.home_altitude_amsl = self.current_gps.altitude
                 self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
                 self.takeoff_used = True
                 self.set_state(FlightState.TAKEOFF)
@@ -427,11 +425,7 @@ class WaypointPlannerNode(Node):
         if waypoint_idx < 0 or waypoint_idx >= len(self.waypoints):
             return
         lon, lat = self.waypoints[waypoint_idx]
-        self.current_setpoint = {
-            'latitude': lat,
-            'longitude': lon,
-            'altitude': self.takeoff_altitude
-        }
+        set_gps_setpoint(lat, lon, self.takeoff_altitude)
         self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={self.takeoff_altitude:.1f}m')
 
     def set_gps_setpoint(self, lat: float, lon: float, alt: float):
@@ -439,7 +433,7 @@ class WaypointPlannerNode(Node):
         self.current_setpoint = {
             'latitude': lat,
             'longitude': lon,
-            'altitude': alt
+            'altitude': self.takeoff_altitude # let's hardcode this for safety for now
         }
 
     def publish_setpoint(self):
@@ -449,11 +443,11 @@ class WaypointPlannerNode(Node):
         
         msg = GlobalPositionTarget()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.coordinate_frame = 6  # amsl altitude
+        msg.coordinate_frame = 6  # FRAME_GLOBAL_REL_ALT
         msg.type_mask = 504 # position + yaw
         msg.latitude = float(self.current_setpoint['latitude'])
         msg.longitude = float(self.current_setpoint['longitude'])
-        msg.altitude = self.home_altitude_amsl + float(self.current_setpoint['altitude']) # convert from rel to amsl
+        msg.altitude = float(self.current_setpoint['altitude'])
         msg.yaw = 0.0  # align north
         self.setpoint_pub.publish(msg)
 
