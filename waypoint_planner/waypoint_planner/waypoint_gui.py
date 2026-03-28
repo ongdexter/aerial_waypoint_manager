@@ -17,11 +17,11 @@ from rclpy.executors import MultiThreadedExecutor
 
 from sensor_msgs.msg import NavSatFix
 from nav_msgs.msg import Path
-from std_msgs.msg import String, UInt32
+from std_msgs.msg import String, UInt32, Float64
 from geographic_msgs.msg import GeoPoseStamped
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import Point
-from mavros_msgs.msg import State as MavrosState, StatusText
+from mavros_msgs.msg import State as MavrosState, StatusText, GlobalPositionTarget
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -35,7 +35,8 @@ from PyQt5.QtGui import QFont, QPixmap, QImage, QPainter, QPen, QColor, QBrush, 
 class SignalBridge(QObject):
     """Bridge for thread-safe Qt signal emission from ROS callbacks."""
     state_changed = pyqtSignal(str)
-    gps_changed = pyqtSignal(float, float, float)
+    gps_changed = pyqtSignal(float, float)
+    altitude_changed = pyqtSignal(float)
     setpoint_changed = pyqtSignal(float, float, float)  # actual tracked setpoint
     preview_setpoint_changed = pyqtSignal(float, float, float)  # preview only
     mavros_state_changed = pyqtSignal(bool, bool, str, int)  # connected, armed, mode, sys_status
@@ -71,10 +72,18 @@ class WaypointGuiNode(Node):
             10
         )
 
+        # Subscribe to current relative altitude
+        self.altitude_sub = self.create_subscription(
+            Float64,
+            '/mavros/global_position/rel_alt',
+            self._on_rel_altitude,
+            10
+        )
+
         # Subscribe to current setpoint (tracked waypoint)
         self.setpoint_sub = self.create_subscription(
-            GeoPoseStamped,
-            '/mavros/setpoint/global',
+            GlobalPositionTarget,
+            '/mavros/setpoint_raw/global',
             self._on_setpoint,
             10
         )
@@ -153,14 +162,18 @@ class WaypointGuiNode(Node):
     
     def _on_gps(self, msg: NavSatFix):
         """Handle GPS updates."""
-        self.signal_bridge.gps_changed.emit(msg.latitude, msg.longitude, msg.altitude)
+        self.signal_bridge.gps_changed.emit(msg.latitude, msg.longitude)
 
-    def _on_setpoint(self, msg: GeoPoseStamped):
+    def _on_rel_altitude(self, msg: Float64):
+        """Handle relative altitude updates."""
+        self.signal_bridge.altitude_changed.emit(msg.data)
+
+    def _on_setpoint(self, msg: GlobalPositionTarget):
         """Handle current setpoint / tracked waypoint updates (these command the vehicle)."""
         self._has_actual_setpoint = True
-        lat = msg.pose.position.latitude
-        lon = msg.pose.position.longitude
-        alt = msg.pose.position.altitude
+        lat = msg.latitude
+        lon = msg.longitude
+        alt = msg.altitude
         self.signal_bridge.setpoint_changed.emit(lat, lon, alt)
 
     def _on_preview_setpoint(self, msg: GeoPoseStamped):
@@ -473,6 +486,7 @@ class WaypointGuiWindow(QMainWindow):
         # Connect signals
         self.signal_bridge.state_changed.connect(self._update_state_display)
         self.signal_bridge.gps_changed.connect(self._update_gps_display)
+        self.signal_bridge.altitude_changed.connect(self._update_altitude_display)
         self.signal_bridge.setpoint_changed.connect(self._update_target_display)
         self.signal_bridge.preview_setpoint_changed.connect(self._update_preview_display)
         self.signal_bridge.mavros_state_changed.connect(self._update_mavros_state)
@@ -842,13 +856,17 @@ class WaypointGuiWindow(QMainWindow):
             if self.map_widget:
                 self.map_widget.clear_actual_setpoint()
     
-    def _update_gps_display(self, lat: float, lon: float, alt: float):
-        """Update GPS display labels and map."""
+    def _update_gps_display(self, lat: float, lon: float):
+        """Update GPS latitude/longitude display labels and map."""
         self.lat_label.setText(f'Lat: {lat:.6f}')
         self.lon_label.setText(f'Lon: {lon:.6f}')
-        self.alt_label.setText(f'Alt: {alt:.1f}m')
+
         if self.map_widget:
             self.map_widget.update_gps(lat, lon)
+
+    def _update_altitude_display(self, alt: float):
+        """Update displayed current relative altitude."""
+        self.alt_label.setText(f'Alt: {alt:.1f}m')
 
     def _check_state_timeout(self):
         """Check for state message timeout and update status_label accordingly."""
