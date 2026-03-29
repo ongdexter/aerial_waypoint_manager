@@ -15,7 +15,7 @@ from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from geographic_msgs.msg import GeoPoseStamped
-from mavros_msgs.msg import GlobalPositionTarget
+from mavros_msgs.msg import GlobalPositionTarget, Altitude
 from std_msgs.msg import Float64
 
 class FlightState(Enum):
@@ -138,7 +138,7 @@ class WaypointPlannerNode(Node):
         # Subscribers
         self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self.on_gps, 10)
         self.altitude_rel_sub = self.create_subscription(Float64, uav_altitude_rel_topic, self.on_rel_altitude, 10)
-        self.altitude_amsl_sub = self.create_subscription(Float64, uav_altitude_amsl_topic, self.on_amsl_altitude, 10)
+        self.altitude_amsl_sub = self.create_subscription(Altitude, uav_altitude_amsl_topic, self.on_amsl_altitude, 10)
         self.goal_sub = self.create_subscription(NavSatFix, goal_topic, self.on_goal, 10)
         self.manual_goal_sub = self.create_subscription(NavSatFix, '~/manual_waypoint', self.on_manual_goal, 10)
         self.mode_sub = self.create_subscription(String, '~/set_waypoint_mode', self.on_set_mode, 10)
@@ -184,7 +184,7 @@ class WaypointPlannerNode(Node):
         """Handle relative altitude updates."""
         self.current_altitude_rel = msg.data
     
-    def on_amsl_altitude(self, msg: Float64):
+    def on_amsl_altitude(self, msg: Altitude):
         """Handle AMSL altitude updates."""
         self.current_altitude_amsl = msg.amsl
 
@@ -435,7 +435,7 @@ class WaypointPlannerNode(Node):
         if waypoint_idx < 0 or waypoint_idx >= len(self.waypoints):
             return
         lon, lat = self.waypoints[waypoint_idx]
-        set_gps_setpoint(lat, lon, self.takeoff_altitude)
+        self.set_gps_setpoint(lat, lon, self.takeoff_altitude)
         self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={self.takeoff_altitude:.1f}m')
 
     def set_gps_setpoint(self, lat: float, lon: float, alt: float):
