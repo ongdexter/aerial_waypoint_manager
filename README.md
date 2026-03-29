@@ -66,7 +66,6 @@ waypoint_planner:
     waypoint_graph_file: '/path/to/waypoint_graph.pkl'
     
     # Takeoff
-    takeoff_enabled: true
     use_takeoff_pos: true  # Use current GPS as home
     takeoff_altitude: 10.0
     

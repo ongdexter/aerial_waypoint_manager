@@ -49,7 +49,6 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('state_topic', '~/state')
 
         # Takeoff parameters
-        self.declare_parameter('takeoff_enabled', False)
         self.declare_parameter('use_takeoff_pos', False)
         self.declare_parameter('takeoff_latitude', 0.0)
         self.declare_parameter('takeoff_longitude', 0.0)
@@ -63,7 +62,6 @@ class WaypointPlannerNode(Node):
         # Load parameters
         waypoint_graph_file = self.get_parameter('waypoint_graph_file').get_parameter_value().string_value
 
-        self.takeoff_enabled = self.get_parameter('takeoff_enabled').get_parameter_value().bool_value
         self.use_takeoff_pos = self.get_parameter('use_takeoff_pos').get_parameter_value().bool_value
         self.takeoff_latitude = self.get_parameter('takeoff_latitude').get_parameter_value().double_value
         self.takeoff_longitude = self.get_parameter('takeoff_longitude').get_parameter_value().double_value

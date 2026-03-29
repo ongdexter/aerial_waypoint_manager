@@ -12,7 +12,6 @@ waypoint_planner:
     state_topic: '~/state'
     
     # Takeoff
-    takeoff_enabled: true
     use_takeoff_pos: true    
     takeoff_altitude: 20.0 # relative to takeoff height
     takeoff_latitude: 40.0 # used if use_takeoff_pos is false
