@@ -40,7 +40,8 @@ class WaypointPlannerNode(Node):
 
         # Topics
         self.declare_parameter('uav_gps_topic', '/mavros/global_position/global')
-        self.declare_parameter('uav_altitude_topic', '/mavros/global_position/rel_alt')
+        self.declare_parameter('uav_altitude_rel_topic', '/mavros/global_position/rel_alt')
+        self.declare_parameter('uav_altitude_amsl_topic', '/mavros/altitude')
         self.declare_parameter('goal_topic', 'waypoint_request')
         self.declare_parameter('waypoint_response_topic', 'waypoint_response')
         self.declare_parameter('setpoint_topic', '/mavros/setpoint/global')
@@ -88,7 +89,8 @@ class WaypointPlannerNode(Node):
             raise ValueError('Please regenerate graph with consolidated format')
 
         # Coordinate transformer
-        self.transformer = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
+        self.transformer = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)        
+        self.inv_transformer = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
 
         # KDTree for nearest waypoint lookups
         waypoints_utm = [self.transformer.transform(lon, lat) for lon, lat in self.waypoints]
@@ -101,7 +103,9 @@ class WaypointPlannerNode(Node):
         self.home_latitude = None
         self.home_longitude = None
         self.home_altitude_rel = None
+        self.home_altitude_amsl = None
         self.current_altitude_rel = None # we always work in relative altitude
+        self.current_altitude_amsl = None
 
         # Path tracking
         self.current_path = None
@@ -113,7 +117,8 @@ class WaypointPlannerNode(Node):
 
         # Get topic names
         uav_gps_topic = self.get_parameter('uav_gps_topic').get_parameter_value().string_value
-        uav_altitude_topic = self.get_parameter('uav_altitude_topic').get_parameter_value().string_value
+        uav_altitude_rel_topic = self.get_parameter('uav_altitude_rel_topic').get_parameter_value().string_value
+        uav_altitude_amsl_topic = self.get_parameter('uav_altitude_amsl_topic').get_parameter_value().string_value
         goal_topic = self.get_parameter('goal_topic').get_parameter_value().string_value
         waypoint_response_topic = self.get_parameter('waypoint_response_topic').get_parameter_value().string_value
         setpoint_topic = self.get_parameter('setpoint_topic').get_parameter_value().string_value
@@ -132,7 +137,8 @@ class WaypointPlannerNode(Node):
 
         # Subscribers
         self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self.on_gps, 10)
-        self.altitude_sub = self.create_subscription(Float64, uav_altitude_topic, self.on_rel_altitude, 10)
+        self.altitude_rel_sub = self.create_subscription(Float64, uav_altitude_rel_topic, self.on_rel_altitude, 10)
+        self.altitude_amsl_sub = self.create_subscription(Float64, uav_altitude_amsl_topic, self.on_amsl_altitude, 10)
         self.goal_sub = self.create_subscription(NavSatFix, goal_topic, self.on_goal, 10)
         self.manual_goal_sub = self.create_subscription(NavSatFix, '~/manual_waypoint', self.on_manual_goal, 10)
         self.mode_sub = self.create_subscription(String, '~/set_waypoint_mode', self.on_set_mode, 10)
@@ -177,6 +183,10 @@ class WaypointPlannerNode(Node):
     def on_rel_altitude(self, msg: Float64):
         """Handle relative altitude updates."""
         self.current_altitude_rel = msg.data
+    
+    def on_amsl_altitude(self, msg: Float64):
+        """Handle AMSL altitude updates."""
+        self.current_altitude_amsl = msg.amsl
 
     def srv_takeoff(self, request, response):
         """Service callback for takeoff command."""
@@ -198,6 +208,7 @@ class WaypointPlannerNode(Node):
                     self.home_latitude = self.takeoff_latitude
                     self.home_longitude = self.takeoff_longitude
                 self.home_altitude_rel = self.current_altitude_rel
+                self.home_altitude_amsl = self.current_altitude_amsl
                 self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
                 self.takeoff_used = True
                 self.set_state(FlightState.TAKEOFF)
@@ -272,8 +283,7 @@ class WaypointPlannerNode(Node):
         new_alt = self.current_altitude_rel + msg.z
 
         # Convert back to GPS
-        inv_transformer = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
-        new_lon, new_lat = inv_transformer.transform(new_x, new_y)
+        new_lon, new_lat = self.inv_transformer.transform(new_x, new_y)
 
         # Clear any existing path and set direct setpoint
         self.current_path = None
@@ -443,11 +453,12 @@ class WaypointPlannerNode(Node):
         
         msg = GlobalPositionTarget()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.coordinate_frame = 6  # FRAME_GLOBAL_REL_ALT
+        # FRAME_GLOBAL_INT=5, FRAME_GLOBAL_REL_ALT=6
+        msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_INT # use AMSL altitude
         msg.type_mask = 504 # position + yaw
         msg.latitude = float(self.current_setpoint['latitude'])
         msg.longitude = float(self.current_setpoint['longitude'])
-        msg.altitude = float(self.current_setpoint['altitude'])
+        msg.altitude = float(self.home_altitude_amsl + self.current_setpoint['altitude']) # convert to AMSL altitude
         msg.yaw = 0.0  # align north
         self.setpoint_pub.publish(msg)
 
