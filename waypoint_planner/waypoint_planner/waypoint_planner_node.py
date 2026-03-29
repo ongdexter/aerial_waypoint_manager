@@ -1,5 +1,6 @@
 import os
 import pickle
+import math
 from enum import Enum, auto
 
 import rclpy
@@ -455,11 +456,20 @@ class WaypointPlannerNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         # FRAME_GLOBAL_INT=5, FRAME_GLOBAL_REL_ALT=6
         msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_INT # use AMSL altitude
-        msg.type_mask = 2559 # position + yaw / 504?
+        msg.type_mask = (
+            GlobalPositionTarget.IGNORE_VX |       # 8
+            GlobalPositionTarget.IGNORE_VY |       # 16
+            GlobalPositionTarget.IGNORE_VZ |       # 32
+            GlobalPositionTarget.IGNORE_AFX |      # 64
+            GlobalPositionTarget.IGNORE_AFY |      # 128
+            GlobalPositionTarget.IGNORE_AFZ |      # 256
+            GlobalPositionTarget.FORCE |           # 512
+            GlobalPositionTarget.IGNORE_YAW_RATE   # 2048
+        )
         msg.latitude = float(self.current_setpoint['latitude'])
         msg.longitude = float(self.current_setpoint['longitude'])
         msg.altitude = float(self.home_altitude_amsl + self.current_setpoint['altitude']) # convert to AMSL altitude
-        msg.yaw = 0.0  # align north
+        msg.yaw = math.pi / 2.0  # align north
         self.setpoint_pub.publish(msg)
 
     def publish_preview_setpoint(self, lat: float, lon: float, alt: float):
