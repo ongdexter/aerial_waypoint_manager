@@ -2,18 +2,21 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
 
 
 def generate_launch_description():
     """Launch the Qt waypoint planner GUI."""
 
-    log_level_arg = DeclareLaunchArgument(
-        'log_level', default_value='info', description='rclpy log level'
+    config_file = os.path.join(
+        get_package_share_directory('waypoint_planner'),
+        'config',
+        'waypoint_planner.yaml',
     )
 
-    satellite_map_arg = DeclareLaunchArgument(
-        'satellite_map_file', default_value='/home/odexter/ros2_sim_ws/src/aerial_waypoint_manager/satellite_map.pkl',
-        description='Path to satellite_map.pkl for map overlay'
+    log_level_arg = DeclareLaunchArgument(
+        'log_level', default_value='info', description='rclpy log level'
     )
 
     gui_node = Node(
@@ -21,14 +24,15 @@ def generate_launch_description():
         executable='waypoint_gui',
         name='waypoint_gui',
         output='screen',
-        parameters=[{
-            'log_level': LaunchConfiguration('log_level'),
-            'satellite_map_file': LaunchConfiguration('satellite_map_file'),
-        }],
+        parameters=[
+            config_file,
+            {
+                'log_level': LaunchConfiguration('log_level'),
+            },
+        ],
     )
 
     return LaunchDescription([
         log_level_arg,
-        satellite_map_arg,
         gui_node,
     ])
