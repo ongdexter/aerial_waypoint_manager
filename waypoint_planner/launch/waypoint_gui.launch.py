@@ -11,7 +11,6 @@ def generate_launch_description():
 
     config_file = os.path.join(
         get_package_share_directory('waypoint_planner'),
-        'config',
         'waypoint_planner.yaml',
     )
 

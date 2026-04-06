@@ -17,7 +17,7 @@ def generate_launch_description():
         # Declare launch arguments
         DeclareLaunchArgument(
             'fcu_url',
-            default_value='/dev/ttyTHS1:921600',
+            default_value='/dev/ttyUSB0:921600',
             description='PX4 FCU URL (serial or UDP)'
         ),
         DeclareLaunchArgument('gcs_url', default_value=''),

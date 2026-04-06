@@ -1,6 +1,6 @@
 waypoint_planner:
   ros__parameters:
-    waypoint_graph_file: '/root/mfa_ws/waypoint_graph.pkl'
+    waypoint_graph_file: '/root/ase_ws/waypoint_graph.pkl'
     
     # Topics
     uav_gps_topic: '/mavros/global_position/global'
@@ -20,8 +20,8 @@ waypoint_planner:
     # FSM
     fsm_rate: 20.0
     altitude_threshold: 0.2
-    position_threshold: 2.0
+    position_threshold: 3.0
 
 waypoint_gui:
   ros__parameters:
-    satellite_map_file: '/root/mfa_ws/satellite_map.pkl'
+    satellite_map_file: '/root/ase_ws/satellite_map.pkl'
