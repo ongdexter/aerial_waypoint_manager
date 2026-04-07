@@ -6,7 +6,7 @@ waypoint_planner:
     uav_gps_topic: '/mavros/global_position/global'
     uav_altitude_amsl_topic: '/mavros/altitude'
     uav_altitude_rel_topic: '/mavros/global_position/rel_alt'    
-    goal_topic: 'waypoint_request'
+    goal_topic: '/planner/gps_waypoint'
     waypoint_response_topic: 'waypoint_response'
     setpoint_topic: '/mavros/setpoint_raw/global'
     state_topic: '~/state'
