@@ -1,5 +1,6 @@
 waypoint_planner:
   ros__parameters:
+    autopilot_type: 'PX4' # Options: 'PX4', 'ArduPilot'
     waypoint_graph_file: '/root/ase_ws/waypoint_graph.pkl'
     
     # Topics

@@ -31,6 +31,10 @@ class WaypointMode(Enum):
     AUTO = auto()    # Graph-based path planning
     MANUAL = auto()  # Direct GPS waypoint
 
+class AutopilotType(Enum):
+    PX4 = 'px4'
+    ARDUPILOT = 'ardupilot'
+
 
 class WaypointPlannerNode(Node):
     def __init__(self):
@@ -38,6 +42,7 @@ class WaypointPlannerNode(Node):
 
         # Parameters (can be overridden via ros2 param or launch)
         self.declare_parameter('waypoint_graph_file', '')
+        self.declare_parameter('autopilot_type', 'px4')
 
         # Topics
         self.declare_parameter('uav_gps_topic', '/mavros/global_position/global')
@@ -45,7 +50,7 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('uav_altitude_amsl_topic', '/mavros/altitude')
         self.declare_parameter('goal_topic', 'waypoint_request')
         self.declare_parameter('waypoint_response_topic', 'waypoint_response')
-        self.declare_parameter('setpoint_topic', '/mavros/setpoint/global')
+        self.declare_parameter('setpoint_topic', '/mavros/setpoint_raw/global')
         self.declare_parameter('state_topic', '~/state')
 
         # Takeoff parameters
@@ -61,6 +66,7 @@ class WaypointPlannerNode(Node):
 
         # Load parameters
         waypoint_graph_file = self.get_parameter('waypoint_graph_file').get_parameter_value().string_value
+        self.autopilot_type = AutopilotType(self.get_parameter('autopilot_type').get_parameter_value().string_value)
 
         self.use_takeoff_pos = self.get_parameter('use_takeoff_pos').get_parameter_value().bool_value
         self.takeoff_latitude = self.get_parameter('takeoff_latitude').get_parameter_value().double_value
@@ -156,7 +162,7 @@ class WaypointPlannerNode(Node):
         interval = 1.0 / max(0.1, self.fsm_rate)
         self.fsm_timer = self.create_timer(interval, self._update_fsm)
 
-        self.get_logger().info(f'Waypoint planner FSM started in {self.state.name} state')
+        self.get_logger().info(f'Waypoint planner FSM started in {self.state.name} state, autopilot type {self.autopilot_type.value}')
 
     def publish_state(self):
         """Publish current FSM state."""
@@ -198,21 +204,29 @@ class WaypointPlannerNode(Node):
             if self.current_gps is None:
                 response.success = False
                 response.message = 'No GPS fix available'
+                return response
+            if self.current_altitude_rel is None:
+                response.success = False
+                response.message = 'No relative altitude available'
+                return response
+            if self.autopilot_type == AutopilotType.PX4 and self.current_altitude_amsl is None:
+                response.success = False
+                response.message = 'No AMSL altitude available'
+                return response
+            # Initialize home position
+            if self.use_takeoff_pos:
+                self.home_latitude = self.current_gps.latitude
+                self.home_longitude = self.current_gps.longitude
             else:
-                # Initialize home position
-                if self.use_takeoff_pos:
-                    self.home_latitude = self.current_gps.latitude
-                    self.home_longitude = self.current_gps.longitude
-                else:
-                    self.home_latitude = self.takeoff_latitude
-                    self.home_longitude = self.takeoff_longitude
-                self.home_altitude_rel = self.current_altitude_rel
-                self.home_altitude_amsl = self.current_altitude_amsl
-                self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
-                self.takeoff_used = True
-                self.set_state(FlightState.TAKEOFF)
-                response.success = True
-                response.message = f'Taking off to {self.takeoff_altitude:.1f}m'
+                self.home_latitude = self.takeoff_latitude
+                self.home_longitude = self.takeoff_longitude
+            self.home_altitude_rel = self.current_altitude_rel
+            self.home_altitude_amsl = self.current_altitude_amsl
+            self.set_gps_setpoint(self.home_latitude, self.home_longitude, self.takeoff_altitude)
+            self.takeoff_used = True
+            self.set_state(FlightState.TAKEOFF)
+            response.success = True
+            response.message = f'Taking off to {self.takeoff_altitude:.1f}m'
         else:
             response.success = False
             response.message = f'Cannot takeoff from {self.state.name} state'
@@ -453,7 +467,7 @@ class WaypointPlannerNode(Node):
         msg = GlobalPositionTarget()
         msg.header.stamp = self.get_clock().now().to_msg()
         # FRAME_GLOBAL_INT=5, FRAME_GLOBAL_REL_ALT=6
-        msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_INT # use AMSL altitude
+        # msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_INT # use AMSL altitude
         msg.type_mask = (
             GlobalPositionTarget.IGNORE_VX |       # 8
             GlobalPositionTarget.IGNORE_VY |       # 16
@@ -466,8 +480,19 @@ class WaypointPlannerNode(Node):
         )
         msg.latitude = float(self.current_setpoint['latitude'])
         msg.longitude = float(self.current_setpoint['longitude'])
-        msg.altitude = float(self.home_altitude_amsl + self.current_setpoint['altitude']) # convert to AMSL altitude
+        if self.autopilot_type == AutopilotType.PX4:
+            # PX4: AMSL altitude with FRAME_GLOBAL_INT
+            if self.home_altitude_amsl is None:
+                self.get_logger().warning('Cannot publish PX4 setpoint: home AMSL altitude is not initialized')
+                return
+            msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_INT
+            msg.altitude = float(self.home_altitude_amsl + self.current_setpoint['altitude'])
+        else:
+            # ArduPilot: relative altitude with FRAME_GLOBAL_REL_ALT
+            msg.coordinate_frame = GlobalPositionTarget.FRAME_GLOBAL_REL_ALT
+            msg.altitude = float(self.current_setpoint['altitude'])
         msg.yaw = math.pi / 2.0  # align north
+        msg.yaw_rate = 0.0
         self.setpoint_pub.publish(msg)
 
     def publish_preview_setpoint(self, lat: float, lon: float, alt: float):
