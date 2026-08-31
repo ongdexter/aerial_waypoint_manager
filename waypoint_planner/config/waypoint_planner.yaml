@@ -1,7 +1,10 @@
+/**:
+  ros__parameters:
+    waypoint_data_file: '/mnt/d/Downloads/pennovation.pkl'
+
 /**/waypoint_planner:
   ros__parameters:
     autopilot_type: 'PX4' # Options: 'PX4', 'ArduPilot'
-    waypoint_graph_file: '/root/ase_ws/waypoint_graph.pkl'
     
     # Topics
     uav_gps_topic: 'mavros/global_position/global'
@@ -24,7 +27,3 @@
     fsm_rate: 20.0
     altitude_threshold: 0.2
     position_threshold: 3.0
-
-/**/waypoint_gui:
-  ros__parameters:
-    satellite_map_file: '/root/ase_ws/satellite_map.pkl'

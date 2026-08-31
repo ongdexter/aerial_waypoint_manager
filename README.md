@@ -1,6 +1,6 @@
 # waypoint_planner
 
-ROS2 package for UAV waypoint planning with a Finite State Machine (FSM) for flight control. Loads a pre-built waypoint graph and provides path planning, takeoff, tracking, and return-to-home capabilities.
+ROS2 package for UAV waypoint planning with a Finite State Machine (FSM) for flight control. Loads a pre-built waypoint graph and satellite map from one data file and provides path planning, takeoff, tracking, and return-to-home capabilities.
 
 ## Features
 
@@ -66,7 +66,7 @@ See `config/waypoint_planner.yaml`:
 ```yaml
 waypoint_planner:
   ros__parameters:
-    waypoint_graph_file: '/path/to/waypoint_graph.pkl'
+    waypoint_data_file: '/path/to/waypoint_data.pkl'
     
     # Takeoff
     use_takeoff_pos: true  # Use current GPS as home
@@ -85,19 +85,13 @@ Generate polygons using Google Earth:
 2. No-fly zones (NFZ) — name these polygons `nfz_1`, `nfz_2`, etc.
 3. Export as KML
 
-Run waypoint_sampler:
+Build the sampled points, graph, and GUI satellite image with one command:
 
 ```bash
-python waypoint_sampler.py --kml area.kml --resolution 2.0 --output waypoints_data.json
+python waypoint_planner/scripts/build_waypoint_data.py --kml area.kml --resolution 2.0 --output waypoint_data.pkl
 ```
 
-## Waypoint Graph
-
-```bash
-python waypoint_graph.py --waypoint_data waypoints_data.json --graph_file waypoint_graph.pkl
-```
-
-The consolidated `.pkl` file contains both the graph and waypoint GPS coordinates.
+The generated `.pkl` contains the graph, waypoint GPS coordinates, polygons, satellite image, and pixel/GPS bounds. Set the wildcard `waypoint_data_file` once in the YAML configuration; ROS supplies it to both `waypoint_planner` and `waypoint_gui`. Satellite capture requires Playwright's Chromium browser (`playwright install chromium`).
 
 ## GUI Controls
 

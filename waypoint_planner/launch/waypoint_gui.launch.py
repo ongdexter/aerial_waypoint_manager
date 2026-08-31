@@ -9,11 +9,16 @@ import os
 def generate_launch_description():
     """Launch the Qt waypoint planner GUI."""
 
-    config_file = os.path.join(
+    default_config = os.path.join(
         get_package_share_directory('waypoint_planner'),
         'waypoint_planner.yaml',
     )
 
+    config_file_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=default_config,
+        description='Path to the shared waypoint planner config YAML file',
+    )
     log_level_arg = DeclareLaunchArgument(
         'log_level', default_value='info', description='rclpy log level'
     )
@@ -26,7 +31,7 @@ def generate_launch_description():
         name='waypoint_gui',
         output='screen',
         parameters=[
-            config_file,
+            LaunchConfiguration('config_file'),
             {
                 'log_level': LaunchConfiguration('log_level'),
             },
@@ -34,6 +39,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        config_file_arg,
         log_level_arg,
         robot_ns_arg,
         gui_node,

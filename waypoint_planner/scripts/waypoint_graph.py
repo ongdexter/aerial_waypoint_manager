@@ -10,11 +10,8 @@ import pickle
 import random
 import time
 
-def create_graph(waypoint_data_file, graph_file):
-    # load sampled waypoints
-    with open(waypoint_data_file, 'r') as f:
-        data = json.load(f)
-
+def build_graph(data, max_dist=5.0):
+    """Build a weighted waypoint graph from sampled waypoint data."""
     waypoints = data['waypoints']  # list of (lon, lat)
     ao_coords = data['ao']
     nfz_coords_list = data['nfzs']
@@ -34,20 +31,29 @@ def create_graph(waypoint_data_file, graph_file):
         G.add_node(i, pos=wp)
 
     tree = KDTree(waypoints_utm)
-    max_dist = 5.0  # meters
     for i, wp in enumerate(waypoints_utm):
         neighbors = tree.query_ball_point(wp, max_dist)
         for j in neighbors:
             if i < j:
                 dist = Point(wp).distance(Point(waypoints_utm[j]))
                 G.add_edge(i, j, weight=dist)
+
+    return G
+
+
+def create_graph(waypoint_data_file, graph_file, max_dist=5.0):
+    # load sampled waypoints
+    with open(waypoint_data_file, 'r') as f:
+        data = json.load(f)
+
+    G = build_graph(data, max_dist=max_dist)
     
     # Save consolidated data (graph + waypoint data) in single file
     consolidated_data = {
         'graph': G,
-        'waypoints': waypoints,
-        'ao': ao_coords,
-        'nfzs': nfz_coords_list
+        'waypoints': data['waypoints'],
+        'ao': data['ao'],
+        'nfzs': data['nfzs']
     }
     with open(graph_file, 'wb') as f:
         pickle.dump(consolidated_data, f)
@@ -155,13 +161,14 @@ if __name__ == "__main__":
     parser.add_argument('--test', action='store_true', help='Test path planning on the graph')
     parser.add_argument('--waypoint_data', type=str, default='waypoints_data.json', help='Path to waypoint data JSON file')
     parser.add_argument('--graph_file', type=str, default='graph.pkl', help='Path to save/load the graph pickle file')
+    parser.add_argument('--max_distance', type=float, default=5.0, help='Maximum graph edge length in meters')
 
     args = parser.parse_args()    
 
     if not os.path.exists(args.waypoint_data):
         raise FileNotFoundError(f"Waypoint data file {args.waypoint_data} not found")
     if not os.path.exists(args.graph_file):            
-        create_graph(args.waypoint_data, args.graph_file)
+        create_graph(args.waypoint_data, args.graph_file, args.max_distance)
     else:
         print(f"Graph file {args.graph_file} already exists.")
     

@@ -2,3 +2,9 @@ networkx
 scipy
 pyproj
 shapely
+folium
+lxml
+matplotlib
+numpy
+pillow
+playwright

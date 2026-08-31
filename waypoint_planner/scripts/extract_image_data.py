@@ -7,7 +7,6 @@ import os
 import io
 from playwright.sync_api import sync_playwright
 import time
-from waypoint_planner.pix_gps_map import PixGpsMap
 import pickle
 
 def parse_kml(kml_file: str):
@@ -188,6 +187,8 @@ def draw_polygons(map_converter, ao_coords, nfz_coords_list, nfz_names):
 
 # MAIN
 if __name__ == "__main__":
+    from waypoint_planner.pix_gps_map import PixGpsMap
+
     kml_file = 'pennovation.kml'
 
     ao_coords, nfz_coords_list, nfz_names = parse_kml(kml_file)

@@ -41,7 +41,7 @@ class WaypointPlannerNode(Node):
         super().__init__('waypoint_planner')
 
         # Parameters (can be overridden via ros2 param or launch)
-        self.declare_parameter('waypoint_graph_file', '')
+        self.declare_parameter('waypoint_data_file', '')
         self.declare_parameter('autopilot_type', 'px4')
 
         # Topics
@@ -67,7 +67,7 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('position_threshold', 2.0)
 
         # Load parameters
-        waypoint_graph_file = self.get_parameter('waypoint_graph_file').get_parameter_value().string_value
+        waypoint_data_file = self.get_parameter('waypoint_data_file').get_parameter_value().string_value
         autopilot_type = self.get_parameter('autopilot_type').get_parameter_value().string_value
         self.autopilot_type = AutopilotType(autopilot_type.lower())
 
@@ -81,11 +81,11 @@ class WaypointPlannerNode(Node):
         self.position_threshold = self.get_parameter('position_threshold').get_parameter_value().double_value
 
         # Load waypoint graph
-        if not os.path.exists(waypoint_graph_file):
-            self.get_logger().error(f'Waypoint graph file not found: {waypoint_graph_file}')
-            raise FileNotFoundError(waypoint_graph_file)
+        if not os.path.exists(waypoint_data_file):
+            self.get_logger().error(f'Waypoint data file not found: {waypoint_data_file}')
+            raise FileNotFoundError(waypoint_data_file)
 
-        with open(waypoint_graph_file, 'rb') as f:
+        with open(waypoint_data_file, 'rb') as f:
             loaded_data = pickle.load(f)
 
         if isinstance(loaded_data, dict):

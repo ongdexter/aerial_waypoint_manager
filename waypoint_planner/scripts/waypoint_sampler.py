@@ -82,7 +82,7 @@ def sample_waypoints(ao_coords, nfz_coords_list, spacing: float):
     return waypoints_utm, waypoints_latlon, ao_poly, nfz_polys
 
 
-def visualize(ao_poly, nfz_polys, waypoints_utm, output_image: str = None):
+def visualize(ao_poly, nfz_polys, waypoints_utm, output_image: str = None, show=True):
     """Visualize AO, NFZs, and sampled waypoints."""
     plt.figure(figsize=(10, 8))
 
@@ -111,7 +111,10 @@ def visualize(ao_poly, nfz_polys, waypoints_utm, output_image: str = None):
         plt.savefig(output_image, dpi=300, bbox_inches='tight')
         print(f"Saved visualization to {output_image}")
     
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def main():
