@@ -41,11 +41,14 @@ ros2 run waypoint_planner waypoint_gui
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `/mavros/global_position/global` | `NavSatFix` | UAV GPS input |
+| `/uav/mavros/global_position/global` | `NavSatFix` | UAV GPS input |
 | `~/state` | `String` | Current FSM state |
-| `waypoint_request` | `NavSatFix` | Goal GPS for path planning |
+| `/uav/planner/gps_waypoint` | `NavSatFix` | GPS planning goal (routed through the waypoint graph) |
 | `waypoint_response` | `Path` | Planned path output |
-| `/mavros/setpoint_raw/global` | `GlobalPositionTarget` | Setpoint output |
+| `/uav/waypoint_planner/navigation_status` | `String` | `ACTIVE`, `SUCCEEDED`, or `FAILED` |
+| `/uav/waypoint_planner/navigation_feedback` | `Float64` | Remaining planned-path distance in meters |
+
+| `/uav/mavros/setpoint_raw/global` | `GlobalPositionTarget` | Setpoint output |
 | `~/relative_move` | `Point` | Relative move (X,Y,Z meters) |
 
 ## Services

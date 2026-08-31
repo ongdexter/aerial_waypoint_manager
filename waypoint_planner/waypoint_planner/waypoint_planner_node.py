@@ -45,13 +45,15 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('autopilot_type', 'px4')
 
         # Topics
-        self.declare_parameter('uav_gps_topic', '/mavros/global_position/global')
-        self.declare_parameter('uav_altitude_rel_topic', '/mavros/global_position/rel_alt')
-        self.declare_parameter('uav_altitude_amsl_topic', '/mavros/altitude')
+        self.declare_parameter('uav_gps_topic', 'mavros/global_position/global')
+        self.declare_parameter('uav_altitude_rel_topic', 'mavros/global_position/rel_alt')
+        self.declare_parameter('uav_altitude_amsl_topic', 'mavros/altitude')
         self.declare_parameter('goal_topic', 'waypoint_request')
         self.declare_parameter('waypoint_response_topic', 'waypoint_response')
-        self.declare_parameter('setpoint_topic', '/mavros/setpoint_raw/global')
+        self.declare_parameter('setpoint_topic', 'mavros/setpoint_raw/global')
         self.declare_parameter('state_topic', '~/state')
+        self.declare_parameter('navigation_status_topic', 'waypoint_planner/navigation_status')
+        self.declare_parameter('navigation_feedback_topic', 'waypoint_planner/navigation_feedback')
 
         # Takeoff parameters
         self.declare_parameter('use_takeoff_pos', False)
@@ -66,7 +68,8 @@ class WaypointPlannerNode(Node):
 
         # Load parameters
         waypoint_graph_file = self.get_parameter('waypoint_graph_file').get_parameter_value().string_value
-        self.autopilot_type = AutopilotType(self.get_parameter('autopilot_type').get_parameter_value().string_value)
+        autopilot_type = self.get_parameter('autopilot_type').get_parameter_value().string_value
+        self.autopilot_type = AutopilotType(autopilot_type.lower())
 
         self.use_takeoff_pos = self.get_parameter('use_takeoff_pos').get_parameter_value().bool_value
         self.takeoff_latitude = self.get_parameter('takeoff_latitude').get_parameter_value().double_value
@@ -139,6 +142,12 @@ class WaypointPlannerNode(Node):
         self.gps_path_pub = self.create_publisher(Path, '~/planned_path_gps', 10)
         self.state_pub = self.create_publisher(String, state_topic, 10)
         self.waypoint_mode_pub = self.create_publisher(String, '~/waypoint_mode', 10)
+        self.navigation_status_pub = self.create_publisher(
+            String, str(self.get_parameter('navigation_status_topic').value), 10
+        )
+        self.navigation_feedback_pub = self.create_publisher(
+            Float64, str(self.get_parameter('navigation_feedback_topic').value), 10
+        )
 
         # Subscribers
         self.gps_sub = self.create_subscription(NavSatFix, uav_gps_topic, self.on_gps, 10)
@@ -163,6 +172,16 @@ class WaypointPlannerNode(Node):
         self.fsm_timer = self.create_timer(interval, self._update_fsm)
 
         self.get_logger().info(f'Waypoint planner FSM started in {self.state.name} state, autopilot type {self.autopilot_type.value}')
+
+    def publish_navigation_status(self, status: str):
+        msg = String()
+        msg.data = status
+        self.navigation_status_pub.publish(msg)
+
+    def publish_navigation_feedback(self, distance: float):
+        msg = Float64()
+        msg.data = float(distance)
+        self.navigation_feedback_pub.publish(msg)
 
     def publish_state(self):
         """Publish current FSM state."""
@@ -349,10 +368,7 @@ class WaypointPlannerNode(Node):
             self.get_logger().info('Holding current position after mode switch')
 
     def on_goal(self, msg: NavSatFix):
-        """Handle auto goal waypoint request."""
-        if self.waypoint_mode != WaypointMode.AUTO:
-            self.get_logger().warning('Auto goal received but in MANUAL mode, ignoring')
-            return
+        """Plan an NFZ-aware path to an already-resolved GPS waypoint."""
         self.process_goal(msg)
 
     def on_manual_goal(self, msg: NavSatFix):
@@ -364,12 +380,15 @@ class WaypointPlannerNode(Node):
 
     def process_goal(self, msg: NavSatFix):
         """Plan a graph-based path to the goal GPS coordinate."""
+        self.publish_navigation_status('ACTIVE')
         if self.state not in [FlightState.TRACKING, FlightState.TAKEOFF]:
             self.get_logger().warning(f'Goal received but in {self.state.name} state, ignoring')
+            self.publish_navigation_status('FAILED')
             return
 
         if self.current_gps is None:
             self.get_logger().error('Goal received but no GPS fix available')
+            self.publish_navigation_status('FAILED')
             return
 
         # If in takeoff, transition to tracking
@@ -400,6 +419,7 @@ class WaypointPlannerNode(Node):
 
         except nx.NetworkXNoPath:
             self.get_logger().error('No path found between start and goal')
+            self.publish_navigation_status('FAILED')
             self.publish_path([])
             self.publish_gps_path([])
 
@@ -573,6 +593,12 @@ class WaypointPlannerNode(Node):
 
         # Check if reached current waypoint
         dist = self.distance_to_setpoint()
+        remaining = dist
+        for path_index in range(self.current_path_idx, len(self.current_path) - 1):
+            remaining += float(self.G.edges[
+                self.current_path[path_index], self.current_path[path_index + 1]
+            ].get('weight', 0.0))
+        self.publish_navigation_feedback(remaining)
         if dist <= self.position_threshold:
             self.get_logger().info(f'Reached waypoint {self.current_path[self.current_path_idx]} (dist={dist:.2f}m)')
             self.current_path_idx += 1
@@ -581,6 +607,8 @@ class WaypointPlannerNode(Node):
                 self.set_waypoint_setpoint(self.current_path[self.current_path_idx])
             else:
                 self.get_logger().info('Reached final waypoint of path')
+                self.publish_navigation_feedback(0.0)
+                self.publish_navigation_status('SUCCEEDED')
                 self.current_path = None
                 self.current_path_idx = 0
 

@@ -15,10 +15,12 @@ def generate_launch_description():
         default_value=default_config,
         description='Path to the config YAML file'
     )
+    robot_ns_arg = DeclareLaunchArgument('robot_ns', default_value='uav')
 
     waypoint_planner_node = Node(
         package='waypoint_planner',
         executable='waypoint_planner_node',
+        namespace=LaunchConfiguration('robot_ns'),
         name='waypoint_planner',
         output='screen',
         parameters=[
@@ -31,5 +33,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         config_file_arg,
+        robot_ns_arg,
         waypoint_planner_node
     ])

@@ -59,7 +59,7 @@ class WaypointGuiNode(Node):
         # Subscribe to state topic
         self.state_sub = self.create_subscription(
             String,
-            '/waypoint_planner/state',
+            'waypoint_planner/state',
             self._on_state,
             10
         )
@@ -67,7 +67,7 @@ class WaypointGuiNode(Node):
         # Subscribe to GPS topic
         self.gps_sub = self.create_subscription(
             NavSatFix,
-            '/mavros/global_position/global',
+            'mavros/global_position/global',
             self._on_gps,
             10
         )
@@ -75,7 +75,7 @@ class WaypointGuiNode(Node):
         # Subscribe to current relative altitude
         self.altitude_sub = self.create_subscription(
             Float64,
-            '/mavros/global_position/rel_alt',
+            'mavros/global_position/rel_alt',
             self._on_rel_altitude,
             10
         )
@@ -83,7 +83,7 @@ class WaypointGuiNode(Node):
         # Subscribe to current setpoint (tracked waypoint)
         self.setpoint_sub = self.create_subscription(
             GlobalPositionTarget,
-            '/mavros/setpoint_raw/global',
+            'mavros/setpoint_raw/global',
             self._on_setpoint,
             10
         )
@@ -91,7 +91,7 @@ class WaypointGuiNode(Node):
         # Subscribe to preview setpoint (published while IDLE as a UI preview only)
         self.preview_sub = self.create_subscription(
             GeoPoseStamped,
-            '/waypoint_planner/preview_setpoint',
+            'waypoint_planner/preview_setpoint',
             self._on_preview_setpoint,
             10
         )
@@ -99,7 +99,7 @@ class WaypointGuiNode(Node):
         # Subscribe to planned GPS path for map overlay
         self.gps_path_sub = self.create_subscription(
             Path,
-            '/waypoint_planner/planned_path_gps',
+            'waypoint_planner/planned_path_gps',
             self._on_gps_path,
             10
         )
@@ -107,7 +107,7 @@ class WaypointGuiNode(Node):
         # Subscribe to MAVROS state
         self.mavros_state_sub = self.create_subscription(
             MavrosState,
-            '/mavros/state',
+            'mavros/state',
             self._on_mavros_state,
             10
         )
@@ -115,7 +115,7 @@ class WaypointGuiNode(Node):
         # Subscribe to satellite count
         self.sat_sub = self.create_subscription(
             UInt32,
-            '/mavros/global_position/raw/satellites',
+            'mavros/global_position/raw/satellites',
             self._on_satellites,
             10
         )
@@ -123,7 +123,7 @@ class WaypointGuiNode(Node):
         # Subscribe to PX4 status text (preflight errors, warnings, etc.)
         self.statustext_sub = self.create_subscription(
             StatusText,
-            '/mavros/statustext/recv',
+            'mavros/statustext/recv',
             self._on_statustext,
             10
         )
@@ -131,28 +131,28 @@ class WaypointGuiNode(Node):
         # Publisher for relative move commands
         self.relative_move_pub = self.create_publisher(
             Point,
-            '/waypoint_planner/relative_move',
+            'waypoint_planner/relative_move',
             10
         )
 
         # Publisher for manual waypoint goals
         self.goal_pub = self.create_publisher(
             NavSatFix,
-            '/waypoint_planner/manual_waypoint',
+            'waypoint_planner/manual_waypoint',
             10
         )
 
         # Publisher for waypoint mode switches
         self.mode_pub = self.create_publisher(
             String,
-            '/waypoint_planner/set_waypoint_mode',
+            'waypoint_planner/set_waypoint_mode',
             10
         )
         
         # Service clients
-        self.takeoff_client = self.create_client(Trigger, '/waypoint_planner/takeoff')
-        self.rth_client = self.create_client(Trigger, '/waypoint_planner/rth')
-        self.abort_client = self.create_client(Trigger, '/waypoint_planner/abort')
+        self.takeoff_client = self.create_client(Trigger, 'waypoint_planner/takeoff')
+        self.rth_client = self.create_client(Trigger, 'waypoint_planner/rth')
+        self.abort_client = self.create_client(Trigger, 'waypoint_planner/abort')
         
         self.get_logger().info('Waypoint GUI node started')
     

@@ -1,16 +1,18 @@
-waypoint_planner:
+/**/waypoint_planner:
   ros__parameters:
     autopilot_type: 'PX4' # Options: 'PX4', 'ArduPilot'
     waypoint_graph_file: '/root/ase_ws/waypoint_graph.pkl'
     
     # Topics
-    uav_gps_topic: '/mavros/global_position/global'
-    uav_altitude_amsl_topic: '/mavros/altitude'
-    uav_altitude_rel_topic: '/mavros/global_position/rel_alt'    
-    goal_topic: '/planner/gps_waypoint'
+    uav_gps_topic: 'mavros/global_position/global'
+    uav_altitude_amsl_topic: 'mavros/altitude'
+    uav_altitude_rel_topic: 'mavros/global_position/rel_alt'
+    goal_topic: 'planner/gps_waypoint'
     waypoint_response_topic: 'waypoint_response'
-    setpoint_topic: '/mavros/setpoint_raw/global'
+    setpoint_topic: 'mavros/setpoint_raw/global'
     state_topic: '~/state'
+    navigation_status_topic: 'waypoint_planner/navigation_status'
+    navigation_feedback_topic: 'waypoint_planner/navigation_feedback'
     
     # Takeoff
     use_takeoff_pos: true    
@@ -23,6 +25,6 @@ waypoint_planner:
     altitude_threshold: 0.2
     position_threshold: 3.0
 
-waypoint_gui:
+/**/waypoint_gui:
   ros__parameters:
     satellite_map_file: '/root/ase_ws/satellite_map.pkl'

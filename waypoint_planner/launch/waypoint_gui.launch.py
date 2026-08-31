@@ -17,10 +17,12 @@ def generate_launch_description():
     log_level_arg = DeclareLaunchArgument(
         'log_level', default_value='info', description='rclpy log level'
     )
+    robot_ns_arg = DeclareLaunchArgument('robot_ns', default_value='uav')
 
     gui_node = Node(
         package='waypoint_planner',
         executable='waypoint_gui',
+        namespace=LaunchConfiguration('robot_ns'),
         name='waypoint_gui',
         output='screen',
         parameters=[
@@ -33,5 +35,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         log_level_arg,
+        robot_ns_arg,
         gui_node,
     ])

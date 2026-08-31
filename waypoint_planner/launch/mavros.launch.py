@@ -6,6 +6,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    robot_ns_arg = DeclareLaunchArgument('robot_ns', default_value='uav')
     fcu_url_arg = DeclareLaunchArgument(
         'fcu_url',
         default_value='/dev/ttyUSB0:921600',
@@ -31,7 +32,9 @@ def generate_launch_description():
         package='mavros',
         executable='mavros_node',
         output='screen',
-        namespace='mavros',
+        namespace=PathJoinSubstitution([
+            LaunchConfiguration('robot_ns'), 'mavros'
+        ]),
         parameters=[
             LaunchConfiguration('pluginlists_yaml'),
             LaunchConfiguration('config_yaml'),
@@ -44,6 +47,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        robot_ns_arg,
         fcu_url_arg,
         pluginlists_yaml_arg,
         config_yaml_arg,
