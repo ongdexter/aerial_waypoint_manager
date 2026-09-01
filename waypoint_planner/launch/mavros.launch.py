@@ -40,8 +40,8 @@ def generate_launch_description():
             LaunchConfiguration('config_yaml'),
             {
                 'fcu_url': LaunchConfiguration('fcu_url'),
-                'system_id': 22,
-                'system_target_id': 122,
+                'system_id': 21,
+                'system_target_id': 121,
             }
         ]
     )
