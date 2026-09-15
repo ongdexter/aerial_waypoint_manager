@@ -28,8 +28,8 @@ class FlightState(Enum):
 
 class WaypointMode(Enum):
     """Waypoint tracking mode."""
-    AUTO = auto()    # Graph-based path planning
-    MANUAL = auto()  # Direct GPS waypoint
+    AUTO = auto()    # Autonomous waypoints
+    MANUAL = auto()  # GUI-based waypoints
 
 class AutopilotType(Enum):
     PX4 = 'px4'
@@ -60,6 +60,10 @@ class WaypointPlannerNode(Node):
         self.declare_parameter('takeoff_latitude', 0.0)
         self.declare_parameter('takeoff_longitude', 0.0)
         self.declare_parameter('takeoff_altitude', 10.0)
+        # When true (default), every setpoint holds takeoff_altitude regardless of
+        # what altitude the caller asked for -- the current safety behavior. When
+        # false, RTH/relative-move/hold-in-place honor their requested altitude.
+        self.declare_parameter('fixed_altitude', True)
 
         # FSM parameters
         self.declare_parameter('fsm_rate', 2.0)
@@ -75,6 +79,10 @@ class WaypointPlannerNode(Node):
         self.takeoff_latitude = self.get_parameter('takeoff_latitude').get_parameter_value().double_value
         self.takeoff_longitude = self.get_parameter('takeoff_longitude').get_parameter_value().double_value
         self.takeoff_altitude = self.get_parameter('takeoff_altitude').get_parameter_value().double_value
+        self.fixed_altitude = self.get_parameter('fixed_altitude').get_parameter_value().bool_value
+        # Altitude for the active graph-routed goal (process_goal); falls back to
+        # takeoff_altitude until a goal with a finite altitude arrives.
+        self.goal_altitude = self.takeoff_altitude
 
         self.fsm_rate = self.get_parameter('fsm_rate').get_parameter_value().double_value
         self.altitude_threshold = self.get_parameter('altitude_threshold').get_parameter_value().double_value
@@ -395,6 +403,12 @@ class WaypointPlannerNode(Node):
         if self.state == FlightState.TAKEOFF:
             self.set_state(FlightState.TRACKING)
 
+        # The graph's waypoints carry no altitude of their own, so hold whatever
+        # altitude this goal requested across every hop of the routed path.
+        self.goal_altitude = (
+            float(msg.altitude) if math.isfinite(msg.altitude) else self.takeoff_altitude
+        )
+
         # Plan path
         start_utm = self.transformer.transform(self.current_gps.longitude, self.current_gps.latitude)
         end_utm = self.transformer.transform(msg.longitude, msg.latitude)
@@ -443,14 +457,14 @@ class WaypointPlannerNode(Node):
 
     def publish_gps_path(self, path):
         """Publish planned path in GPS coordinates for GUI map overlay.
-        
+
         Each pose stores: position.x = latitude, position.y = longitude,
-        position.z = altitude (takeoff alt).
+        position.z = altitude (the active goal's altitude).
         """
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = 'map'
-        alt = self.takeoff_altitude
+        alt = self.goal_altitude
         poses = []
         for i in path:
             lon, lat = self.waypoints[i]
@@ -468,15 +482,15 @@ class WaypointPlannerNode(Node):
         if waypoint_idx < 0 or waypoint_idx >= len(self.waypoints):
             return
         lon, lat = self.waypoints[waypoint_idx]
-        self.set_gps_setpoint(lat, lon, self.takeoff_altitude)
-        self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={self.takeoff_altitude:.1f}m')
+        self.set_gps_setpoint(lat, lon, self.goal_altitude)
+        self.get_logger().info(f'Setpoint: waypoint {waypoint_idx} -> lat={lat:.6f}, lon={lon:.6f}, alt={self.goal_altitude:.1f}m')
 
     def set_gps_setpoint(self, lat: float, lon: float, alt: float):
         """Set current setpoint from GPS coordinates."""
         self.current_setpoint = {
             'latitude': lat,
             'longitude': lon,
-            'altitude': self.takeoff_altitude # let's hardcode this for safety for now
+            'altitude': self.takeoff_altitude if self.fixed_altitude else alt
         }
 
     def publish_setpoint(self):
@@ -557,7 +571,9 @@ class WaypointPlannerNode(Node):
         else:
             lat = self.takeoff_latitude
             lon = self.takeoff_longitude
-        alt = self.current_altitude_rel
+        # GPS and relative-altitude are independent mavros topics with no
+        # guaranteed arrival order; don't wait on the latter for a UI-only preview.
+        alt = self.current_altitude_rel if self.current_altitude_rel is not None else 0.0
 
         # Publish preview setpoint (UI only). Do NOT change current_setpoint or command the vehicle.
         self.publish_preview_setpoint(lat, lon, alt)

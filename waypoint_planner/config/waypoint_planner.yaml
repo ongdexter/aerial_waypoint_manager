@@ -18,10 +18,11 @@
     navigation_feedback_topic: 'waypoint_planner/navigation_feedback'
     
     # Takeoff
-    use_takeoff_pos: true    
+    use_takeoff_pos: true
     takeoff_altitude: 20.0 # relative to takeoff height
     takeoff_latitude: 40.0 # used if use_takeoff_pos is false
     takeoff_longitude: -74.0 # used if use_takeoff_pos is false
+    fixed_altitude: true # always maintain takeoff altitude
     
     # FSM
     fsm_rate: 20.0
