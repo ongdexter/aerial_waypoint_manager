@@ -2,7 +2,11 @@ import json
 import argparse
 import networkx as nx
 from shapely.geometry import Polygon, Point
-from pyproj import Transformer
+import os
+import sys
+# Run directly from the source tree as well as from an installed workspace.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from waypoint_planner.utm_zone import transformers_for, zone_name
 import matplotlib.pyplot as plt
 import os
 from scipy.spatial import KDTree
@@ -16,8 +20,9 @@ def build_graph(data, max_dist=5.0):
     ao_coords = data['ao']
     nfz_coords_list = data['nfzs']
 
-    # UTM transformer
-    transformer_to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
+    # UTM transformer, zoned from the data rather than fixed.
+    transformer_to_utm, _, epsg = transformers_for(waypoints[0][0], waypoints[0][1])
+    print(f"Projecting with EPSG:{epsg} (UTM zone {zone_name(waypoints[0][0], waypoints[0][1])})")
 
     # transform to UTM
     waypoints_utm = [transformer_to_utm.transform(lon, lat) for lon, lat in waypoints]
@@ -88,8 +93,9 @@ def test(graph_file, waypoint_data_file=None):
         ao_coords = data['ao']
         nfz_coords_list = data['nfzs']
 
-    # UTM transformer
-    transformer_to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
+    # UTM transformer, zoned from the data rather than fixed.
+    transformer_to_utm, _, epsg = transformers_for(waypoints[0][0], waypoints[0][1])
+    print(f"Projecting with EPSG:{epsg} (UTM zone {zone_name(waypoints[0][0], waypoints[0][1])})")
 
     # transform to UTM
     waypoints_utm = [transformer_to_utm.transform(lon, lat) for lon, lat in waypoints]

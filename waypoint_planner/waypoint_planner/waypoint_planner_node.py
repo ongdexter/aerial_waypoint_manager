@@ -8,7 +8,7 @@ from rclpy.node import Node
 
 import networkx as nx
 from scipy.spatial import KDTree
-from pyproj import Transformer
+from waypoint_planner.utm_zone import transformers_for, zone_name
 
 from sensor_msgs.msg import NavSatFix
 from nav_msgs.msg import Path
@@ -104,9 +104,14 @@ class WaypointPlannerNode(Node):
             self.get_logger().error('Legacy graph format not supported')
             raise ValueError('Please regenerate graph with consolidated format')
 
-        # Coordinate transformer
-        self.transformer = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)        
-        self.inv_transformer = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
+        # Coordinate transformer, zoned from the graph's own waypoints rather
+        # than fixed, so a site outside zone 18 still projects correctly.
+        if not self.waypoints:
+            raise ValueError('Waypoint graph contains no waypoints')
+        ref_lon, ref_lat = self.waypoints[0][0], self.waypoints[0][1]
+        self.transformer, self.inv_transformer, epsg = transformers_for(ref_lon, ref_lat)
+        self.get_logger().info(
+            f'Projecting waypoints with EPSG:{epsg} (UTM zone {zone_name(ref_lon, ref_lat)})')
 
         # KDTree for nearest waypoint lookups
         waypoints_utm = [self.transformer.transform(lon, lat) for lon, lat in self.waypoints]

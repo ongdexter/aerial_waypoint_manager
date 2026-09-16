@@ -11,7 +11,11 @@ import json
 
 from lxml import etree
 from shapely.geometry import Polygon, Point
-from pyproj import Transformer
+import os
+import sys
+# Run directly from the source tree as well as from an installed workspace.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from waypoint_planner.utm_zone import transformers_for, zone_name
 import matplotlib.pyplot as plt
 
 
@@ -46,9 +50,10 @@ def parse_kml(kml_file: str):
 
 def sample_waypoints(ao_coords, nfz_coords_list, spacing: float):
     """Sample waypoints within AO, excluding NFZs."""
-    # UTM Zone 18N transformer
-    transformer_to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32618", always_xy=True)
-    transformer_from_utm = Transformer.from_crs("EPSG:32618", "EPSG:4326", always_xy=True)
+    # UTM transformer, zoned from the AO rather than fixed.
+    ref_lon, ref_lat = ao_coords[0][0], ao_coords[0][1]
+    transformer_to_utm, transformer_from_utm, epsg = transformers_for(ref_lon, ref_lat)
+    print(f"Projecting with EPSG:{epsg} (UTM zone {zone_name(ref_lon, ref_lat)})")
 
     def transform_coords(coords, transformer):
         return [(transformer.transform(lon, lat)[0], transformer.transform(lon, lat)[1]) 
