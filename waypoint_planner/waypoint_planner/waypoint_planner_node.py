@@ -173,6 +173,7 @@ class WaypointPlannerNode(Node):
         # Services for FSM control
         self.takeoff_srv = self.create_service(Trigger, '~/takeoff', self.srv_takeoff)
         self.rth_srv = self.create_service(Trigger, '~/rth', self.srv_rth)
+        self.hold_srv = self.create_service(Trigger, '~/hold', self.srv_hold)
         self.abort_srv = self.create_service(Trigger, '~/abort', self.srv_abort)
 
         # Relative move subscriber (receives X,Y,Z offsets in meters)
@@ -293,16 +294,37 @@ class WaypointPlannerNode(Node):
         
         return response
 
-    def srv_abort(self, request, response):
-        """Service callback for abort/emergency stop."""
+    def srv_hold(self, request, response):
+        """Clear navigation and keep streaming the current position as a setpoint."""
+        if self.state not in (FlightState.TRACKING, FlightState.TAKEOFF):
+            response.success = False
+            response.message = f'Cannot hold from {self.state.name}'
+            return response
+        if (self.current_gps is None or self.current_altitude_rel is None
+                or not all(math.isfinite(value) for value in (
+                    self.current_gps.latitude, self.current_gps.longitude,
+                    self.current_altitude_rel))):
+            response.success = False
+            response.message = 'No valid position available for hold'
+            return response
         self.current_path = None
         self.current_path_idx = 0
-        self.current_setpoint = None
-        self.publish_gps_path([])  # Clear path on GUI
-        self.set_state(FlightState.IDLE)
+        # Hold actual altitude even when ordinary waypoints use fixed_altitude.
+        self.current_setpoint = {
+            'latitude': self.current_gps.latitude,
+            'longitude': self.current_gps.longitude,
+            'altitude': float(self.current_altitude_rel),
+        }
+        self.publish_path([])
+        self.publish_gps_path([])
+        self.set_state(FlightState.TRACKING)
         response.success = True
-        response.message = 'Aborted, now in IDLE state'
+        response.message = 'Navigation cleared; holding current position'
         return response
+
+    def srv_abort(self, request, response):
+        """Abort navigation while continuing to hold position in TRACKING."""
+        return self.srv_hold(request, response)
 
     def on_relative_move(self, msg: Point):
         """Handle relative move command (X, Y, Z offsets in meters)."""

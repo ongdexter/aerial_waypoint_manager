@@ -57,7 +57,8 @@ ros2 run waypoint_planner waypoint_gui
 |---------|------|-------------|
 | `~/takeoff` | `Trigger` | Start takeoff from IDLE |
 | `~/rth` | `Trigger` | Return to home while holding current altitude |
-| `~/abort` | `Trigger` | Emergency stop → IDLE |
+| `~/hold` | `Trigger` | Clear the route and hold current position/altitude in TRACKING |
+| `~/abort` | `Trigger` | Abort navigation and hold current position/altitude in TRACKING (same as `~/hold`) |
 
 ## Configuration
 
