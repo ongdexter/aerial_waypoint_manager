@@ -1,6 +1,7 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import OpaqueFunction, DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -17,22 +18,29 @@ def generate_launch_description():
     )
     robot_ns_arg = DeclareLaunchArgument('robot_ns', default_value='uav')
 
-    waypoint_planner_node = Node(
-        package='waypoint_planner',
-        executable='waypoint_planner_node',
-        namespace=LaunchConfiguration('robot_ns'),
-        name='waypoint_planner',
-        output='screen',
-        parameters=[
-            LaunchConfiguration('config_file')
-        ],
-        remappings=[
-            # Add remappings here if needed
-        ],
-    )
+    def _launch_node(context):
+        filename = LaunchConfiguration('pkl_file').perform(context)
+        overrides = {'waypoint_data_file': ParameterValue(filename, value_type=str)} if filename else {}
+        waypoint_planner_node = Node(
+            package='waypoint_planner',
+            executable='waypoint_planner_node',
+            namespace=LaunchConfiguration('robot_ns'),
+            name='waypoint_planner',
+            output='screen',
+            parameters=[
+                LaunchConfiguration('config_file'),
+                overrides,
+            ],
+            remappings=[
+                # Add remappings here if needed
+            ],
+        )
+        return [waypoint_planner_node]
 
     return LaunchDescription([
+        DeclareLaunchArgument('pkl_file', default_value='',
+                              description='Waypoint data pickle; empty keeps the YAML default'),
         config_file_arg,
         robot_ns_arg,
-        waypoint_planner_node
+        OpaqueFunction(function=_launch_node)
     ])
