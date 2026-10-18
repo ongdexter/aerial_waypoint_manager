@@ -42,6 +42,7 @@ class WaypointPlannerNode(Node):
 
         # Parameters (can be overridden via ros2 param or launch)
         self.declare_parameter('waypoint_data_file', '')
+        self.declare_parameter('use_waypoint_graph', True)
         self.declare_parameter('autopilot_type', 'px4')
 
         # Topics
@@ -88,34 +89,42 @@ class WaypointPlannerNode(Node):
         self.altitude_threshold = self.get_parameter('altitude_threshold').get_parameter_value().double_value
         self.position_threshold = self.get_parameter('position_threshold').get_parameter_value().double_value
 
-        # Load waypoint graph
-        if not os.path.exists(waypoint_data_file):
-            self.get_logger().error(f'Waypoint data file not found: {waypoint_data_file}')
-            raise FileNotFoundError(waypoint_data_file)
+        self.use_waypoint_graph = bool(self.get_parameter('use_waypoint_graph').value)
+        self.G = nx.Graph()
+        self.waypoints = []
+        self.transformer = self.inv_transformer = self.kdtree = None
+        if self.use_waypoint_graph:
+            # Load waypoint graph
+            if not os.path.exists(waypoint_data_file):
+                self.get_logger().error(f'Waypoint data file not found: {waypoint_data_file}')
+                raise FileNotFoundError(waypoint_data_file)
 
-        with open(waypoint_data_file, 'rb') as f:
-            loaded_data = pickle.load(f)
+            with open(waypoint_data_file, 'rb') as f:
+                loaded_data = pickle.load(f)
 
-        if isinstance(loaded_data, dict):
-            self.G = loaded_data['graph']
-            self.waypoints = loaded_data['waypoints']
-            self.get_logger().info(f'Loaded waypoint graph with {self.G.number_of_nodes()} nodes and {self.G.number_of_edges()} edges')
+            if isinstance(loaded_data, dict):
+                self.G = loaded_data['graph']
+                self.waypoints = loaded_data['waypoints']
+                self.get_logger().info(f'Loaded waypoint graph with {self.G.number_of_nodes()} nodes and {self.G.number_of_edges()} edges')
+            else:
+                self.get_logger().error('Legacy graph format not supported')
+                raise ValueError('Please regenerate graph with consolidated format')
+
+            # Coordinate transformer, zoned from the graph's own waypoints rather
+            # than fixed, so a site outside zone 18 still projects correctly.
+            if not self.waypoints:
+                raise ValueError('Waypoint graph contains no waypoints')
+            ref_lon, ref_lat = self.waypoints[0][0], self.waypoints[0][1]
+            self.transformer, self.inv_transformer, epsg = transformers_for(ref_lon, ref_lat)
+            self.get_logger().info(
+                f'Projecting waypoints with EPSG:{epsg} (UTM zone {zone_name(ref_lon, ref_lat)})')
+
+            # KDTree for nearest waypoint lookups
+            waypoints_utm = [self.transformer.transform(lon, lat) for lon, lat in self.waypoints]
+            self.kdtree = KDTree(waypoints_utm)
+
         else:
-            self.get_logger().error('Legacy graph format not supported')
-            raise ValueError('Please regenerate graph with consolidated format')
-
-        # Coordinate transformer, zoned from the graph's own waypoints rather
-        # than fixed, so a site outside zone 18 still projects correctly.
-        if not self.waypoints:
-            raise ValueError('Waypoint graph contains no waypoints')
-        ref_lon, ref_lat = self.waypoints[0][0], self.waypoints[0][1]
-        self.transformer, self.inv_transformer, epsg = transformers_for(ref_lon, ref_lat)
-        self.get_logger().info(
-            f'Projecting waypoints with EPSG:{epsg} (UTM zone {zone_name(ref_lon, ref_lat)})')
-
-        # KDTree for nearest waypoint lookups
-        waypoints_utm = [self.transformer.transform(lon, lat) for lon, lat in self.waypoints]
-        self.kdtree = KDTree(waypoints_utm)
+            self.get_logger().info('Waypoint graph disabled; manual flight controls remain available')
 
         # FSM state
         self.state = FlightState.IDLE
@@ -216,6 +225,10 @@ class WaypointPlannerNode(Node):
 
     def on_gps(self, msg: NavSatFix):
         """Handle GPS updates."""
+        if self.transformer is None:
+            if not (math.isfinite(msg.longitude) and math.isfinite(msg.latitude)):
+                return
+            self.transformer, self.inv_transformer, _ = transformers_for(msg.longitude, msg.latitude)
         self.current_gps = msg
 
     def on_rel_altitude(self, msg: Float64):
@@ -415,6 +428,10 @@ class WaypointPlannerNode(Node):
 
     def process_goal(self, msg: NavSatFix):
         """Plan a graph-based path to the goal GPS coordinate."""
+        if not self.use_waypoint_graph:
+            self.get_logger().warning('Graph routing is disabled: no waypoint pickle configured')
+            self.publish_navigation_status('FAILED')
+            return
         self.publish_navigation_status('ACTIVE')
         if self.state not in [FlightState.TRACKING, FlightState.TAKEOFF]:
             self.get_logger().warning(f'Goal received but in {self.state.name} state, ignoring')

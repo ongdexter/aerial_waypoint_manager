@@ -20,7 +20,10 @@ def generate_launch_description():
 
     def _launch_node(context):
         filename = LaunchConfiguration('pkl_file').perform(context)
-        overrides = {'waypoint_data_file': ParameterValue(filename, value_type=str)} if filename else {}
+        overrides = {
+            'waypoint_data_file': ParameterValue(filename, value_type=str),
+            'use_waypoint_graph': bool(filename),
+        }
         waypoint_planner_node = Node(
             package='waypoint_planner',
             executable='waypoint_planner_node',
@@ -39,7 +42,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('pkl_file', default_value='',
-                              description='Waypoint data pickle; empty keeps the YAML default'),
+                              description='Waypoint graph pickle; empty disables graph routing'),
         config_file_arg,
         robot_ns_arg,
         OpaqueFunction(function=_launch_node)

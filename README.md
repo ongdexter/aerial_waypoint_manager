@@ -29,6 +29,27 @@ ros2 launch waypoint_planner waypoint_planner.launch.py
 ros2 run waypoint_planner waypoint_gui
 ```
 
+## Multi-robot MAVROS
+
+The UAV `mavros.launch.py` and UGV `ugv_mavros.launch.py` isolate MAVROS's
+internal raw MAVLink topics under `/<robot_ns>/mavros/internal/uas<tgt_system>/`.
+Both robots may use FCU system ID `1` without sharing this internal ROS bus.
+Public topics retain their existing names, including `/uav/mavros/rc/in` and
+`/ugv/rc/in` with the respective default launch namespaces.
+
+Both launch files accept `robot_ns`, `fcu_url`, `system_id` (MAVROS sender ID),
+`tgt_system` (actual FCU system ID, default `1`), and `tgt_component` (default `1`).
+Sender IDs remain `21` for the UAV and `31` for the UGV. Set `tgt_system` to the
+FCU's configured MAVLink ID if it differs from `1`; the old `system_target_id`
+parameter was ignored by MAVROS. For example, for an FCU configured with ID `121`:
+
+```bash
+ros2 launch waypoint_planner mavros.launch.py tgt_system:=121
+```
+
+Rebuild/source the workspace and restart both MAVROS instances to apply the
+isolation changes.
+
 ## FSM States
 
 | State | Description |
@@ -92,7 +113,7 @@ Build the sampled points, graph, and GUI satellite image with one command:
 python waypoint_planner/scripts/build_waypoint_data.py --kml area.kml --resolution 2.0 --output waypoint_data.pkl
 ```
 
-The generated `.pkl` contains the graph, waypoint GPS coordinates, polygons, satellite image, and pixel/GPS bounds. Set the wildcard `waypoint_data_file` once in the YAML configuration; ROS supplies it to both `waypoint_planner` and `waypoint_gui`. Satellite capture requires Playwright's Chromium browser (`playwright install chromium`).
+The generated `.pkl` contains the graph, waypoint GPS coordinates, polygons, satellite image, and pixel/GPS bounds. Pass it to the planner launch with `pkl_file:=/path/to/waypoint_data.pkl`. Set `waypoint_data_file` in the YAML configuration for the standalone `waypoint_gui`. Satellite capture requires Playwright's Chromium browser (`playwright install chromium`).
 
 ## GUI Controls
 
@@ -101,3 +122,11 @@ The Qt GUI (`waypoint_gui`) provides:
 - **GPS display**: Current lat/lon/alt
 - **Flight buttons**: TAKEOFF, RTH, HOLD
 - **Relative move**: X/Y/Z offset inputs (meters)
+
+The single `waypoint_planner.launch.py pkl_file:=/path/to/site.pkl`
+explicitly selects the graph. An empty `pkl_file` overrides the YAML file path and
+sets `use_waypoint_graph: false`: the node starts without loading a pickle,
+manual flight controls remain available, and graph-routed goals report FAILED.
+The geographic projection is initialized from the first GPS fix in this mode.
+Omitting `pkl_file` also disables graph routing; the launch does not fall back to
+the YAML pickle path.
