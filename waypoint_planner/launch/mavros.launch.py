@@ -36,13 +36,13 @@ def _start_mavros(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('robot_ns', default_value='uav'),
-        DeclareLaunchArgument('fcu_url', default_value='/dev/ttyUSB0:921600'),
+        DeclareLaunchArgument('fcu_url', default_value='/dev/ttyTHS1:921600'),
         DeclareLaunchArgument('system_id', default_value='21', description='MAVROS sender system ID'),
         DeclareLaunchArgument('tgt_system', default_value='1', description='Actual FCU MAVLink system ID'),
         DeclareLaunchArgument('tgt_component', default_value='1', description='Actual FCU component ID'),
         DeclareLaunchArgument('pluginlists_yaml', default_value=PathJoinSubstitution([
-            FindPackageShare('waypoint_planner'), 'px4_pluginlists.yaml'])),
+            FindPackageShare('waypoint_planner'), 'px4', 'px4_pluginlists.yaml'])),
         DeclareLaunchArgument('config_yaml', default_value=PathJoinSubstitution([
-            FindPackageShare('waypoint_planner'), 'px4_config.yaml'])),
+            FindPackageShare('waypoint_planner'), 'px4', 'px4_config.yaml'])),
         OpaqueFunction(function=_start_mavros),
     ])

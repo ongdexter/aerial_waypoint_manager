@@ -1,6 +1,6 @@
 /**:
   ros__parameters:
-    waypoint_data_file: '/mnt/d/Downloads/pennovation.pkl'
+    waypoint_data_file: '/root/air_ground_ws/pennovation.pkl'
 
 /**/waypoint_planner:
   ros__parameters:
