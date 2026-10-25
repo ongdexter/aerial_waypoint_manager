@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -23,6 +24,10 @@ def generate_launch_description():
         'log_level', default_value='info', description='rclpy log level'
     )
     robot_ns_arg = DeclareLaunchArgument('robot_ns', default_value='uav')
+    pkl_file_arg = DeclareLaunchArgument(
+        'pkl_file', default_value='',
+        description='Waypoint data pickle; empty disables the satellite map',
+    )
 
     gui_node = Node(
         package='waypoint_planner',
@@ -34,6 +39,9 @@ def generate_launch_description():
             LaunchConfiguration('config_file'),
             {
                 'log_level': LaunchConfiguration('log_level'),
+                'waypoint_data_file': ParameterValue(
+                    LaunchConfiguration('pkl_file'), value_type=str,
+                ),
             },
         ],
     )
@@ -42,5 +50,6 @@ def generate_launch_description():
         config_file_arg,
         log_level_arg,
         robot_ns_arg,
+        pkl_file_arg,
         gui_node,
     ])
