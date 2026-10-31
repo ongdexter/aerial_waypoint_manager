@@ -1,3 +1,4 @@
+import argparse
 import folium
 import numpy as np
 from PIL import Image, ImageDraw
@@ -6,11 +7,14 @@ import tempfile
 import os
 import io
 from playwright.sync_api import sync_playwright
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from waypoint_planner.kml_data import read_kml
 import time
 import pickle
 
 def parse_kml(kml_file: str):
-    tree = etree.parse(kml_file)
+    tree = etree.parse(io.BytesIO(read_kml(kml_file)))
     root = tree.getroot()
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
@@ -189,7 +193,13 @@ def draw_polygons(map_converter, ao_coords, nfz_coords_list, nfz_names):
 if __name__ == "__main__":
     from waypoint_planner.pix_gps_map import PixGpsMap
 
-    kml_file = 'pennovation.kml'
+    parser = argparse.ArgumentParser(description='Extract a satellite map from KML or a waypoint bundle')
+    parser.add_argument('--input', '--kml', dest='input', default='pennovation.kml',
+                        help='Path to KML or waypoint PKL')
+    parser.add_argument('--output', default='satellite_map.pkl')
+    parser.add_argument('--output-image', default='map_with_polygons.png')
+    args = parser.parse_args()
+    kml_file = args.input
 
     ao_coords, nfz_coords_list, nfz_names = parse_kml(kml_file)
     
@@ -197,10 +207,10 @@ if __name__ == "__main__":
     image, bounds_data = get_clean_satellite_with_bounds(ao_coords, nfz_coords_list)
     
     # save everything in one file
-    pkl_path = save_map_data(image, bounds_data, ao_coords, nfz_coords_list, nfz_names, 'satellite_map.pkl')
+    pkl_path = save_map_data(image, bounds_data, ao_coords, nfz_coords_list, nfz_names, args.output)
     
     # load with PixGpsMap and draw polygons    
-    map_converter = PixGpsMap('satellite_map.pkl')
+    map_converter = PixGpsMap(pkl_path)
     final_image = draw_polygons(
         map_converter, 
         ao_coords, 
@@ -208,5 +218,5 @@ if __name__ == "__main__":
         nfz_names
     )
     
-    output_path = 'map_with_polygons.png'
+    output_path = args.output_image
     Image.fromarray(final_image).save(output_path)

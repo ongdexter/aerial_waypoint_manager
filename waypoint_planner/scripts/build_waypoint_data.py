@@ -3,10 +3,12 @@
 
 import argparse
 import pickle
+from pathlib import Path
 
-from extract_image_data import get_clean_satellite_with_bounds
+from extract_image_data import get_clean_satellite_with_bounds, parse_kml as parse_map_kml
 from waypoint_graph import build_graph
 from waypoint_sampler import parse_kml, sample_waypoints, visualize
+from waypoint_planner.kml_data import read_kml
 
 
 def polygon_for_map(coords):
@@ -39,7 +41,8 @@ def build_waypoint_data(kml_file, output_file, resolution=2.0,
     )
 
     data = {
-        'format_version': 1,
+        'format_version': 2,
+        'kml_data': read_kml(kml_file),
         'graph': graph,
         'waypoints': waypoints,
         'ao': ao_coords,
@@ -49,7 +52,7 @@ def build_waypoint_data(kml_file, output_file, resolution=2.0,
         'image_shape': image.shape,
         'ao_coords': ao_map_coords,
         'nfz_coords_list': nfz_map_coords,
-        'nfz_names': [f'nfz_{index + 1}' for index in range(len(nfz_map_coords))],
+        'nfz_names': parse_map_kml(kml_file)[2],
         'resolution': resolution,
         'max_graph_distance': max_distance,
         'source_kml': kml_file,
@@ -73,7 +76,7 @@ def main():
         description='Build waypoint graph and satellite map in one pickle file'
     )
     parser.add_argument('--kml', required=True, help='KML containing ao and nfz_* polygons')
-    parser.add_argument('--output', default='waypoint_data.pkl', help='Output pickle path')
+    parser.add_argument('--output', help='Output pickle path (default: input path with .pkl extension)')
     parser.add_argument('--resolution', type=float, default=2.0, help='Waypoint spacing in meters')
     parser.add_argument('--max-distance', type=float, default=5.0, help='Maximum graph edge length in meters')
     parser.add_argument('--image-width', type=int, default=1200)
@@ -83,7 +86,7 @@ def main():
 
     build_waypoint_data(
         args.kml,
-        args.output,
+        args.output if args.output is not None else str(Path(args.kml).with_suffix('.pkl')),
         resolution=args.resolution,
         max_distance=args.max_distance,
         image_size=(args.image_width, args.image_height),

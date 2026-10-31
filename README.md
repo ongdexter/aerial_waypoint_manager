@@ -110,10 +110,10 @@ Generate polygons using Google Earth:
 Build the sampled points, graph, and GUI satellite image with one command:
 
 ```bash
-python waypoint_planner/scripts/build_waypoint_data.py --kml area.kml --resolution 2.0 --output waypoint_data.pkl
+python waypoint_planner/scripts/build_waypoint_data.py --kml /path/to/area.kml --resolution 2.0
 ```
 
-The generated `.pkl` contains the graph, waypoint GPS coordinates, polygons, satellite image, and pixel/GPS bounds. Pass it to the planner launch with `pkl_file:=/path/to/waypoint_data.pkl`. Set `waypoint_data_file` in the YAML configuration for the standalone `waypoint_gui`. Satellite capture requires Playwright's Chromium browser (`playwright install chromium`).
+The generated `/path/to/area.pkl` contains the graph, waypoint GPS coordinates, polygons, satellite image, pixel/GPS bounds, and complete original KML bytes (`kml_data`, format version 2), including placemark names. Override the destination with `--output`. Pass it to the planner launch with `pkl_file:=/path/to/waypoint_data.pkl`. Set `waypoint_data_file` in the YAML configuration for the standalone `waypoint_gui`. The frontier mapper, semantic grid mapper, and UGV exploration robot launches also accept `pkl_file:=/path/to/area.pkl`, so only the bundle is needed at runtime. Rebuild older bundles to embed the KML. The UGV launch forwards the embedded XML to the C++ occupancy layer as `map_ros.kml_data`; no temporary KML is needed. Satellite capture requires Playwright's Chromium browser (`playwright install chromium`).
 
 ## GUI Controls
 

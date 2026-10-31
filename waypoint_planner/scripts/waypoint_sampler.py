@@ -15,13 +15,15 @@ import os
 import sys
 # Run directly from the source tree as well as from an installed workspace.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+import io
+from waypoint_planner.kml_data import read_kml
 from waypoint_planner.utm_zone import transformers_for, zone_name
 import matplotlib.pyplot as plt
 
 
 def parse_kml(kml_file: str):
     """Parse KML file and extract AO and NFZ polygons."""
-    tree = etree.parse(kml_file)
+    tree = etree.parse(io.BytesIO(read_kml(kml_file)))
     root = tree.getroot()
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
 
@@ -124,8 +126,8 @@ def visualize(ao_poly, nfz_polys, waypoints_utm, output_image: str = None, show=
 
 def main():
     parser = argparse.ArgumentParser(description='Sample waypoints from KML polygons')
-    parser.add_argument('--kml', type=str, default='pennovation.kml',
-                        help='Path to KML file with AO and NFZ polygons')
+    parser.add_argument('--input', '--kml', dest='kml', type=str, default='pennovation.kml',
+                        help='Path to KML or waypoint PKL with AO and NFZ polygons')
     parser.add_argument('--resolution', type=float, default=2.0,
                         help='Waypoint spacing in meters (default: 2.0)')
     parser.add_argument('--output', type=str, default='waypoints_data.json',
